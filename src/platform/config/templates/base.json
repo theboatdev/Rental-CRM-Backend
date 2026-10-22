@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "branding": {
+    "displayName": "New Rental Company",
+    "shortName": "Rentals",
+    "tagline": "",
+    "logoUrl": null,
+    "primaryColor": "#2563EB",
+    "supportEmail": null,
+    "supportPhone": null,
+    "whatsappNumber": null
+  },
+  "locale": {
+    "country": "US",
+    "currency": "USD",
+    "secondaryCurrency": null,
+    "timezone": "UTC",
+    "dateLocale": "en-US",
+    "distanceUnit": "mi"
+  },
+  "modules": {
+    "dashboard": { "enabled": true },
+    "vehicles": { "enabled": true, "serviceIntervalKm": 5000 },
+    "renters": { "enabled": true },
+    "rentals": {
+      "enabled": true,
+      "inspectionPoints": [
+        "Front Bumper & Bonnet",
+        "Rear Bumper & Trunk",
+        "Left Profile",
+        "Right Profile",
+        "Interior & Upholstery",
+        "Dashboard & Odometer"
+      ],
+      "requirePickupInspection": true,
+      "requireDropInspection": true
+    },
+    "calendar": { "enabled": true },
+    "payments": { "enabled": true },
+    "costs": { "enabled": true, "requireBillUpload": false },
+    "fuelLogs": { "enabled": true },
+    "whatsappDigest": { "enabled": false, "cron": "0 8 * * 1", "recipients": [] },
+    "guestPortal": { "enabled": false, "residentTypes": ["local", "tourist"], "requireDocumentUpload": true }
+  },
+  "navigation": [
+    { "module": "dashboard", "label": "Dashboard" },
+    { "module": "vehicles", "label": "Fleet" },
+    { "module": "renters", "label": "Customers" },
+    { "module": "rentals", "label": "Rentals" },
+    { "module": "calendar", "label": "Calendar" },
+    { "module": "payments", "label": "Payments" },
+    { "module": "costs", "label": "Costs" },
+    { "module": "whatsappDigest", "label": "WhatsApp" }
+  ],
+  "lists": {
+    "documentTypes": [
+      { "key": "NATIONAL_ID", "label": "National ID Card", "active": true, "requiredFor": ["local"] },
+      { "key": "DRIVING_LICENSE", "label": "Driving License", "active": true, "requiredFor": ["local", "tourist"] },
+      { "key": "PASSPORT", "label": "Passport", "active": true, "requiredFor": ["tourist"] },
+      { "key": "IDP", "label": "International Driving Permit", "active": true, "requiredFor": [] },
+      { "key": "PROOF_OF_ADDRESS", "label": "Proof of Address", "active": true, "requiredFor": [] },
+      { "key": "OTHER", "label": "Other Document", "active": true, "requiredFor": [] }
+    ],
+    "paymentMethods": [
+      { "key": "CASH", "label": "Cash", "active": true },
+      { "key": "BANK_TRANSFER", "label": "Bank Transfer", "active": true },
+      { "key": "CARD", "label": "Credit/Debit Card", "active": true },
+      { "key": "ONLINE", "label": "Online Payment", "active": false }
+    ],
+    "costCategories": [
+      { "key": "ROUTINE_MAINTENANCE", "label": "Routine Maintenance / Service", "active": true },
+      { "key": "MECHANICAL_REPAIR", "label": "Mechanical Repair", "active": true },
+      { "key": "TIRE_REPLACEMENT", "label": "Tire Replacement", "active": true },
+      { "key": "INSURANCE", "label": "Insurance Premium", "active": true },
+      { "key": "REGISTRATION", "label": "Registration & Licensing", "active": true },
+      { "key": "ACCIDENT_REPAIR", "label": "Accident Repair / Bodywork", "active": true },
+      { "key": "OTHER", "label": "Other", "active": true }
+    ]
+  },
+  "rules": {
+    "defaultDepositAmount": 250,
+    "minRentalDays": 1,
+    "touristPermitDocumentKeys": [],
+    "codePrefixes": { "rental": "RNT", "booking": "BK", "receipt": "RCPT", "advance": "ADV", "renter": "CU" }
+  },
+  "limits": { "maxVehicles": 25, "maxUsers": 5, "storageGb": 5 }
+}

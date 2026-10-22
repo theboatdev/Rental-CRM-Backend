@@ -1,0 +1,9 @@
+node_modules/
+coverage/
+*.log
+
+# Local environment variables (keep the example template)
+.env*
+!.env.example
+
+.DS_Store

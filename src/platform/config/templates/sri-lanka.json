@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "branding": {
+    "displayName": "New Rental Company",
+    "shortName": "Rentals",
+    "tagline": "",
+    "logoUrl": null,
+    "primaryColor": "#2563EB",
+    "supportEmail": null,
+    "supportPhone": null,
+    "whatsappNumber": null
+  },
+  "locale": {
+    "country": "LK",
+    "currency": "LKR",
+    "secondaryCurrency": "USD",
+    "timezone": "Asia/Colombo",
+    "dateLocale": "en-GB",
+    "distanceUnit": "km"
+  },
+  "modules": {
+    "dashboard": { "enabled": true },
+    "vehicles": { "enabled": true, "serviceIntervalKm": 5000 },
+    "renters": { "enabled": true },
+    "rentals": {
+      "enabled": true,
+      "inspectionPoints": [
+        "Front Bumper & Bonnet",
+        "Rear Bumper & Trunk",
+        "Left Profile",
+        "Right Profile",
+        "Interior & Upholstery",
+        "Dashboard & Odometer"
+      ],
+      "requirePickupInspection": true,
+      "requireDropInspection": true
+    },
+    "calendar": { "enabled": true },
+    "payments": { "enabled": true },
+    "costs": { "enabled": true, "requireBillUpload": false },
+    "fuelLogs": { "enabled": true },
+    "whatsappDigest": { "enabled": true, "cron": "0 8 * * 1", "recipients": [] },
+    "guestPortal": { "enabled": true, "residentTypes": ["local", "tourist"], "requireDocumentUpload": true }
+  },
+  "navigation": [
+    { "module": "dashboard", "label": "Dashboard" },
+    { "module": "vehicles", "label": "Fleet Inventory" },
+    { "module": "renters", "label": "Client Profiles" },
+    { "module": "rentals", "label": "Rentals & Inspection" },
+    { "module": "calendar", "label": "Booking Calendar" },
+    { "module": "payments", "label": "Payment Ledger" },
+    { "module": "costs", "label": "Workshop Costs" },
+    { "module": "whatsappDigest", "label": "WhatsApp Digest" }
+  ],
+  "lists": {
+    "documentTypes": [
+      { "key": "NIC", "label": "National Identity Card (NIC)", "active": true, "requiredFor": ["local"] },
+      { "key": "DRIVING_LICENSE_LK", "label": "Sri Lanka Driving License", "active": true, "requiredFor": ["local"] },
+      { "key": "PASSPORT", "label": "Passport (Foreign Tourist)", "active": true, "requiredFor": ["tourist"] },
+      { "key": "IDP", "label": "International Driving Permit (AA Ceylon recognized)", "active": true, "requiredFor": [] },
+      { "key": "DMT_PERMIT", "label": "DMT Airport Temporary Driving Permit", "active": true, "requiredFor": [] },
+      { "key": "PROOF_OF_ADDRESS", "label": "Utility Bill / Proof of Address", "active": true, "requiredFor": [] },
+      { "key": "OTHER", "label": "Other Document", "active": true, "requiredFor": [] }
+    ],
+    "paymentMethods": [
+      { "key": "CASH", "label": "Cash (LKR)", "active": true },
+      { "key": "BANK_TRANSFER", "label": "Bank Transfer", "active": true },
+      { "key": "CARD_SLIP", "label": "Credit/Debit Card Slip", "active": true },
+      { "key": "ONLINE", "label": "Online Payment Gateway", "active": false }
+    ],
+    "costCategories": [
+      { "key": "ROUTINE_MAINTENANCE", "label": "Routine Maintenance / Service", "active": true },
+      { "key": "MECHANICAL_REPAIR", "label": "Mechanical Repair", "active": true },
+      { "key": "SUSPENSION", "label": "Suspension & Bushing", "active": true },
+      { "key": "BRAKE_SERVICE", "label": "Brake Service", "active": true },
+      { "key": "TIRE_REPLACEMENT", "label": "Tire Replacement", "active": true },
+      { "key": "INSURANCE", "label": "Comprehensive Insurance Premium", "active": true },
+      { "key": "REVENUE_LICENSE", "label": "Revenue License & Fitness Test", "active": true },
+      { "key": "ACCIDENT_REPAIR", "label": "Accident Repair / Bodywork", "active": true },
+      { "key": "OTHER", "label": "Other", "active": true }
+    ]
+  },
+  "rules": {
+    "defaultDepositAmount": 25000,
+    "minRentalDays": 1,
+    "touristPermitDocumentKeys": ["IDP", "DMT_PERMIT"],
+    "codePrefixes": { "rental": "RNT", "booking": "BK", "receipt": "RCPT", "advance": "ADV", "renter": "CL" }
+  },
+  "limits": { "maxVehicles": 25, "maxUsers": 5, "storageGb": 5 }
+}
