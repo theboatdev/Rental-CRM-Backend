@@ -3,6 +3,7 @@ const { handle } = require('./handle');
 const { getPlatformMeta } = require('../platform/meta');
 const { validateConfig } = require('../platform/service');
 const { invalid } = require('../platform/errors');
+const { requireDatabase } = require('../middleware/database');
 
 /**
  * Accepts a config either as JSON (`config`) or as the raw text of an
@@ -19,8 +20,12 @@ function readConfigBody(body) {
 
 const invalidJsonResult = (issues) => ({ valid: false, issues, changes: [], removedListKeys: [] });
 
-/** Super admin API. Every route runs behind `platformAuth`, which sets `req.actor`. */
-function createPlatformRouter({ service, platformAuth }) {
+/**
+ * Super admin API. Every route runs behind `platformAuth`, which sets
+ * `req.actor`. The rules (/meta, /config/validate) work without a database;
+ * everything after them needs `platformDb` connected.
+ */
+function createPlatformRouter({ service, platformAuth, platformDb }) {
   const router = express.Router();
   router.use(platformAuth);
 
@@ -33,6 +38,8 @@ function createPlatformRouter({ service, platformAuth }) {
       return syntaxIssues ? invalidJsonResult(syntaxIssues) : validateConfig(config, req.body?.baseline);
     })
   );
+
+  router.use(requireDatabase(platformDb));
 
   router.get('/stats', handle(() => service.getStats()));
 

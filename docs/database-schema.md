@@ -23,17 +23,15 @@ Conventions:
 |---|---|---|
 | `tenants` (`Tenant`) | `name`, `slug`, `status` (`provisioning` · `active` · `suspended` · `archived`), `template`, `adminEmail`, `adminName`, `clerkOrgId`, `dbName` (set from the id), `activeConfigVersion`, `currency`, `limits { maxVehicles, maxUsers, storageGb }`, `usage { vehicles, members, storageGb }`, `createdBy` | `slug` unique; `clerkOrgId` unique when set |
 | `tenant_configs` (`TenantConfig`) | `tenantId`, `version`, `config` (validated before insert), `note`, `createdBy`, `createdAt`. Immutable | `{ tenantId, version }` unique |
-| `provisioning_jobs` (`ProvisioningJob`) | `tenantId`, `status` (`running` · `succeeded` · `failed`), `steps [{ key, label, status, error, attempts, finishedAt }]`, `startedAt`, `finishedAt` | `tenantId` unique; `status` |
+| `provisioning_jobs` (`ProvisioningJob`) | `tenantId`, `status` (`running` · `succeeded` · `failed`), `steps [{ key, label, status, error, attempts, finishedAt }]`, `startedAt`, `finishedAt`, `heartbeatAt` (refreshed at every step; a stale one means the run was cut off) | `tenantId` unique; `status` |
 | `tenant_secrets` (`TenantSecret`) | `tenantId`, `name` (e.g. `whatsapp.accessToken`), `ciphertext`, `iv`, `authTag` (AES-256-GCM), `keyVersion`, `updatedBy` | `{ tenantId, name }` unique |
 | `platform_audit_logs` (`AuditLog`) | `at`, `actor`, `action`, `tenantId`, `tenantName`, `summary` | `at`; `{ tenantId, at }` |
-
-Until Phase 2, the platform service keeps tenants in memory and these collections stay empty.
 
 ## Tenant database
 
 | Collection (model) | Fields | Indexes |
 |---|---|---|
-| `members` (`Member`) | `clerkUserId`, `email`, `name`, `roleKey`, `status` (`active` · `removed`), `removedAt`. No password: Clerk owns sign-in | `clerkUserId` unique; `{ roleKey, status }` |
+| `members` (`Member`) | `clerkUserId`, `email`, `name`, `roleKey`, `status` (`active` · `removed`), `removedAt`, `membershipSyncedAt` and `profileSyncedAt` (time of the last Clerk webhook event applied). No password: Clerk owns sign-in | `clerkUserId` unique; `{ roleKey, status }` |
 | `roles` (`Role`) | `key`, `name`, `description`, `permissions [string]`, `system` | `key` unique |
 | `vehicles` (`Vehicle`) | `plateNumber`, `make`, `model`, `year`, `transmission` (`AUTOMATIC` · `MANUAL`), `fuelType` (`PETROL` · `DIESEL` · `HYBRID` · `ELECTRIC`), `dailyRate`, `secondaryDailyRate`, `depositAmount`, `mileage`, `status` (`AVAILABLE` · `RENTED` · `MAINTENANCE`), `thumbnail`, `notes` | `plateNumber` unique; `status` |
 | `renters` (`Renter`) | `profileId` (e.g. `SR-0146`), `fullName`, `phone`, `email`, `residentType` (`local` · `tourist`), `country`, `address`, `emergencyContact { name, phone, relation }`, `documents [{ type (list key), number, fileKey, verified, verifiedBy, verifiedAt, uploadedAt }]`, `source` (`COUNTER` · `ONLINE`), `notes` | `profileId` unique; `phone` |

@@ -20,7 +20,9 @@ const provisioningJobSchema = new Schema(
     status: { type: String, enum: ['running', 'succeeded', 'failed'], default: 'running' },
     steps: [stepSchema],
     startedAt: { type: Date, default: Date.now },
-    finishedAt: { type: Date }
+    finishedAt: { type: Date, default: null },
+    // Refreshed at every step while running. A running job with an old heartbeat was cut off (e.g. by a restart) and can be retried.
+    heartbeatAt: { type: Date, default: Date.now }
   },
   { collection: 'provisioning_jobs', timestamps: true }
 );

@@ -112,7 +112,7 @@ The chain is in `src/routes/tenant.js`, `src/middleware/tenantAuth.js` and `src/
 1. **`clerkMiddleware()`** (`@clerk/express`) verifies the bearer session token. `authorizedParties` is limited to the two app origins.
 2. **`requireOrgSession`**: 401 without a session, 403 without an active organization. Sets `req.identity = { userId, orgId }`.
 3. **Database check**: 503 while the platform connection is down.
-4. **`resolveTenant`**: `orgId` → `service.findTenantByClerkOrgId(orgId)`, cached for about 60 s. That lookup reads the in-memory store until Phase 2 moves it to `tenants`.
+4. **`resolveTenant`**: `orgId` → `service.findTenantByClerkOrgId(orgId)` (a `tenants` query), cached for about 60 s.
    - The tenant must be `active`, otherwise the API returns 403.
    - `getTenantDb(tenant.dbName)` returns `platformConnection.useDb(dbName, { useCache: true })` with the tenant models registered on it.
    - Attaches `req.tenant`, `req.config`, `req.configVersion` and `req.models`.
@@ -141,16 +141,40 @@ Super admins are not members of tenant organizations. Support access ("view as t
 
 ## Provisioning a tenant
 
-Each step is idempotent and recorded in `provisioning_jobs`, so **Retry** resumes from the failed step:
+`POST /api/platform/tenants` runs the job (`src/platform/provisioning.js`) before it responds. Each step is idempotent and recorded in `provisioning_jobs`, so **Retry** resumes from the failed step:
 
-1. **Create tenant record**: status `provisioning`, `dbName = tenant_<tenantId>`. The DB name uses the immutable id, not the renamable slug.
-2. **Create Clerk organization**: same name and slug, `publicMetadata.tenantId`. No `createdBy`, so the super admin doesn't become a member.
+1. **Create tenant record**: status `provisioning`, `dbName = tenant_<tenantId>`. The DB name uses the immutable id, not the renamable slug. It's written in one transaction with the job and the audit entry.
+2. **Create Clerk organization**: same name and slug, `publicMetadata.tenantId`. No `createdBy`, so the super admin doesn't become a member. A retry finds an organization an earlier attempt created by its slug. If an organization with that slug belongs to something else, the step fails and says so.
 3. **Initialise tenant DB**: `initTenantDb` (`src/db/tenantDb.js`) syncs the indexes of all tenant models and seeds the system roles. Counters are created on first use.
-4. **Write config v1**: `createConfigFromTemplate(template, { branding, limits })`.
-5. **Invite tenant admin**: Clerk organization invitation with role `org:admin` and `publicMetadata.roleKey = "owner"`.
+4. **Write config v1**: `createConfigFromTemplate(template, { branding, limits })`, upserted as version 1.
+5. **Invite tenant admin**: Clerk organization invitation with role `org:admin` and `publicMetadata.roleKey = "owner"`. It's skipped when the admin already has a pending invitation or membership. `CLERK_INVITATION_REDIRECT_URL`, if set, is where the invitation link lands.
 6. **Activate**: status `active`.
 
-Clerk webhooks keep `members` in sync: `organizationMembership.created|updated|deleted`, `organizationInvitation.accepted` and `user.updated`, verified with `verifyWebhook`.
+A failed step leaves the tenant `provisioning`, with the error on the step.
+
+- **Retry** claims the job atomically, so two retries can't run it at once; the second gets 409.
+- A job still `running` with a heartbeat older than 2 minutes was cut off, e.g. by a restart, and can be retried too.
+
+All Clerk calls go through `src/platform/clerk.js`; tests swap in a fake.
+
+### Clerk webhooks
+
+`POST /webhooks/clerk` keeps each tenant's `members` in step with Clerk (`src/platform/members.js`). It's verified with `verifyWebhook` on the raw body, using `CLERK_WEBHOOK_SIGNING_SECRET`.
+
+| Event | Effect |
+|---|---|
+| `organizationMembership.created` | Adds (or re-activates) the member. The role is the membership's `publicMetadata.roleKey`, which Clerk copies from the invitation. Without a valid one: Owner for `org:admin`, Staff otherwise |
+| `organizationMembership.updated` | Updates name and email. An active member's role never changes here: roles belong to the tenant |
+| `organizationMembership.deleted` | Marks the member `removed` |
+| `user.updated` | Copies name and primary email to the member in every tenant the user belongs to |
+| `organization.deleted` | Suspends the tenant and records it in the audit log |
+| Others, incl. `organizationInvitation.accepted` | Acknowledged and ignored (the membership event does the work) |
+
+Membership events also refresh the tenant's `usage.members`.
+
+Clerk can deliver an event twice or out of order. Each member keeps the time of the last applied event (`membershipSyncedAt`, `profileSyncedAt`), and an older event is skipped. A deletion also records a member we never saw, so a late "created" can't bring them back.
+
+Responses: 200 when handled; 400 for a bad signature (no retry); 503 when the secret or the database is missing (Clerk retries with backoff).
 
 **Lifecycle actions:**
 
@@ -163,7 +187,7 @@ The allowed transitions are in `TENANT_STATUS_TRANSITIONS` (`src/platform/tenant
 
 ## Platform API
 
-The super admin API, under `/api/platform`. Every route requires a Clerk session with the `super_admin` platform role. In Phase 0 tenants live in an in-memory store (`src/platform/service.js`); Phase 2 moves them to the platform database without changing these routes.
+The super admin API, under `/api/platform`. Every route requires a Clerk session with the `super_admin` platform role. Tenants, configs, jobs and the audit log are stored in the platform database (`src/platform/service.js`). `/meta` and `/config/validate` don't need the database; the other routes respond 503 while it's unavailable.
 
 | Method and path | Purpose |
 |---|---|
@@ -180,7 +204,7 @@ The super admin API, under `/api/platform`. Every route requires a Clerk session
 | `POST /tenants/:id/config/versions/:version/restore` | Republish an old version as the newest |
 | `GET /audit?tenantId&limit` | Audit log, newest first |
 
-Errors use one shape: `{ "error": { "code", "message", "issues"? } }`. Codes are `unauthenticated` (401), `forbidden` (403), `not_found` (404), `conflict` (409), `invalid` (422, with field `issues`) and `auth_not_configured` (503). The tenant API adds `database_not_configured` and `database_unavailable` (503).
+Errors use one shape: `{ "error": { "code", "message", "issues"? } }`. Codes are `unauthenticated` (401), `forbidden` (403), `not_found` (404), `conflict` (409), `invalid` (422, with field `issues`) and `auth_not_configured` (503). Without a database, routes respond `database_not_configured` or `database_unavailable` (503). The webhook adds `invalid_signature` (400) and `webhooks_not_configured` (503).
 
 ## Tenant API
 

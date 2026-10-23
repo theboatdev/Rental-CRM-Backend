@@ -1,10 +1,8 @@
 const express = require('express');
 const { handle } = require('./handle');
-const { createTenantDbGetter } = require('../db/tenantDb');
-const { isConnected } = require('../db/platform');
+const { requireDatabase } = require('../middleware/database');
 const { resolveTenant, loadMember } = require('../middleware/tenantContext');
 const { ALL_PERMISSIONS } = require('../platform/rbac/permissions');
-const { unavailable } = require('../platform/errors');
 
 /**
  * Tenant API under /api/v1. Every route runs behind the tenant chain:
@@ -13,22 +11,10 @@ const { unavailable } = require('../platform/errors');
  * `requirePermission`, and reach data only through `req.models`.
  *
  * `directory` finds a tenant by Clerk organization (the platform service).
- * Without `platformDb` every request gets a 503 that says MONGODB_URI is missing.
  */
-function createTenantRouter({ tenantAuth, platformDb, directory, cacheTtlMs }) {
+function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, cacheTtlMs }) {
   const router = express.Router();
-  if (!platformDb) {
-    router.use((req, res, next) => next(unavailable('database_not_configured', 'Set MONGODB_URI on the backend')));
-    return router;
-  }
-
-  router.use(
-    tenantAuth,
-    (req, res, next) =>
-      isConnected(platformDb) ? next() : next(unavailable('database_unavailable', "The backend can't reach its database")),
-    resolveTenant({ directory, getTenantDb: createTenantDbGetter(platformDb), cacheTtlMs }),
-    loadMember
-  );
+  router.use(tenantAuth, requireDatabase(platformDb), resolveTenant({ directory, getTenantDb, cacheTtlMs }), loadMember);
 
   /** Who the caller is in this tenant, and what they may do. The tenant app hides what isn't in `permissions`. */
   router.get(

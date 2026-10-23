@@ -13,7 +13,10 @@ const memberSchema = new Schema(
     name: { type: String, trim: true },
     roleKey: { type: String, required: true, match: ROLE_KEY_PATTERN },
     status: { type: String, enum: MEMBER_STATUSES, default: 'active' },
-    removedAt: { type: Date }
+    removedAt: { type: Date },
+    // Time of the last Clerk event applied, so a late or repeated webhook can't undo a newer one.
+    membershipSyncedAt: { type: Date },
+    profileSyncedAt: { type: Date }
   },
   { collection: 'members', timestamps: true }
 );

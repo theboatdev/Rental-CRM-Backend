@@ -64,40 +64,51 @@ To check the setup:
 
 - **Signed out:** every page redirects to `/sign-in`.
 - **Signed in without `platformRole`:** you land on `/unauthorized`.
-- **Signed in as a super admin:** you see the overview, with Shenaly and two demo tenants from the backend's in-memory store.
+- **Signed in as a super admin:** you see the overview. The tenant list is empty until you create a tenant (step 7).
 - **Backend stopped:** pages show "Couldn't load data from the platform API".
 
-## 7. Call the tenant API locally
+## 7. Create a tenant and call its API
 
-Until provisioning creates real organizations (Phase 2), the seeded tenants have mock organization ids, and nobody is a member of them. To call `/api/v1` as yourself:
+Creating a tenant from the dashboard does real work in Clerk and in MongoDB. It creates a Clerk organization, a `tenant_<id>` database with the system roles, and config v1, and it emails an invitation.
 
-1. In the Clerk dashboard, under **Organizations**, create an organization (e.g. "Shenaly Rent a Car") and add yourself as a member. Copy its id (`org_…`) and your user id (`user_…`).
-2. In the backend's `.env`, set `MONGODB_URI` and link the organization to a seeded tenant:
+1. Set `MONGODB_URI` in the backend's `.env` and start the backend and the admin dashboard.
+2. In the dashboard, open **Tenants → New tenant**. Fill in the name (e.g. "Shenaly Rent a Car"), slug (`shenaly`), template and limits. For the admin email, use an inbox you can read.
 
-   ```sh
-   SEED_CLERK_ORG_IDS=shenaly=org_…
-   ```
+   Prefer an address other than your super admin login (e.g. `you+shenaly@gmail.com`): super admins aren't meant to be tenant members.
 
-3. Prepare the tenant database and add yourself as its owner. `--demo` adds sample vehicles and renters.
+3. The result page lists the provisioning steps. In the Clerk dashboard, **Organizations** now shows the organization, and the admin email receives the invitation.
 
-   ```sh
-   npm run seed -- --user user_… --email you@example.com --name "Your Name" --demo
-   ```
+   If a step fails, the error is on that step. Fix the cause, then use **Retry provisioning** on the tenant page; completed steps don't run again.
+4. Accept the invitation by following the email link and signing up.
+   - With webhooks set up (step 8), the backend adds you to the tenant's `members` as its Owner.
+   - Without webhooks, add yourself with the seed script. `--demo` also adds sample vehicles and renters.
 
-   `--role staff` (or `manager`, `accountant`) tries another role. `--tenant <id>` targets another tenant; the default is Shenaly.
+     ```sh
+     npm run seed -- --tenant shenaly --user user_… --email you+shenaly@gmail.com --name "Your Name" --demo
+     ```
 
-4. Restart the backend. Call `GET /api/v1/me` with a session token whose active organization is that organization. Activate it in the app, or get a token with `getToken()` after `setActive({ organization })`.
+     `--role staff` (or `manager`, `accountant`) tries another role.
+5. Call `GET /api/v1/me` with a session token whose active organization is the tenant's. The tenant app does this from Phase 4. Until then, get a token with `getToken()` after `setActive({ organization })`.
 
-The seed script writes to the database in `MONGODB_URI`. It's idempotent, so running it again updates your member record and skips demo data the tenant already has.
+The seed script writes to the database in `MONGODB_URI`. It's idempotent: running it again updates your member record and skips demo data the tenant already has.
+
+## 8. Webhooks
+
+Webhooks keep each tenant's `members` in step with Clerk: joins, removals, and name or email changes. See [platform-architecture.md](platform-architecture.md#clerk-webhooks).
+
+1. Clerk must reach the backend over HTTPS. Locally, run a tunnel such as `ngrok http 5000` or `cloudflared tunnel --url http://localhost:5000`.
+2. In the Clerk dashboard, open **Webhooks → Add Endpoint**:
+   - **URL:** `https://<your tunnel or backend host>/webhooks/clerk`
+   - **Events:**
+     - `organizationMembership.created`, `organizationMembership.updated`, `organizationMembership.deleted`
+     - `organizationInvitation.accepted`
+     - `user.updated`
+     - `organization.deleted`
+3. Copy the endpoint's **Signing Secret** (`whsec_…`) into the backend's `.env` as `CLERK_WEBHOOK_SIGNING_SECRET`, then restart the backend.
+
+Without the secret, `/webhooks/clerk` responds 503 and Clerk keeps retrying for a while. Use the endpoint's **Testing** tab to send a sample event. An event for an organization that isn't a tenant is acknowledged and ignored.
 
 ## Later phases
 
-- **Phase 2, webhooks.** Add a webhook endpoint pointing at `<backend>/webhooks/clerk` for these events:
-  - `organizationMembership.created`, `organizationMembership.updated`, `organizationMembership.deleted`
-  - `organizationInvitation.accepted`
-  - `user.updated`
-  - `organization.deleted`
-
-  Store its signing secret as `CLERK_WEBHOOK_SIGNING_SECRET`.
 - **Phase 4, tenant app.** Add `@clerk/nextjs` to `frontend/` with the same keys. Signed-in users without an active organization are asked to choose one, since personal accounts are off.
 - **Production.** Create the production instance on the root domain (e.g. `example.com`), with the tenant app on `app.example.com` and the admin dashboard on `admin.example.com`. One production instance covers subdomains of the same root domain.

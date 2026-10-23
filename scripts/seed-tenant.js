@@ -1,25 +1,25 @@
 /**
- * Prepares a tenant database for local development:
- *  1. builds its indexes and system roles (initTenantDb, as provisioning will);
- *  2. adds or updates you as a member, so /api/v1 accepts your Clerk session;
+ * Local development helper for a provisioned tenant:
+ *  1. re-runs initTenantDb (indexes and system roles), as provisioning does;
+ *  2. adds or updates you as a member, for when Clerk webhooks can't reach
+ *     your machine to do it when you accept the invitation;
  *  3. with --demo, adds sample vehicles and renters when the tenant has none.
  *
- *   npm run seed -- --user user_2abc --email you@example.com [--name "Your Name"] [--role owner] [--tenant <id>] [--demo]
+ *   npm run seed -- --tenant shenaly --user user_2abc --email you@example.com [--name "Your Name"] [--role owner] [--demo]
  *
- * --tenant defaults to Shenaly. Reads MONGODB_URI and PLATFORM_DB_NAME from .env.
- * To call /api/v1, your Clerk user must also belong to the organization linked
- * to the tenant (SEED_CLERK_ORG_IDS) and have it active in the session.
+ * --tenant takes the tenant's slug or id. Reads MONGODB_URI and PLATFORM_DB_NAME
+ * from .env. To call /api/v1, your Clerk user must also belong to the tenant's
+ * Clerk organization and have it active in the session.
  */
 require('dotenv').config();
 
 const { parseArgs } = require('node:util');
 const { connectPlatformDb } = require('../src/db/platform');
 const { createTenantDbGetter, initTenantDb } = require('../src/db/tenantDb');
-const { tenantDbName } = require('../src/platform/tenants/rules');
-const { SHENALY_TENANT_ID } = require('../src/platform/seed');
+const { isObjectIdOrHexString } = require('mongoose');
 
 const USAGE =
-  'Usage: npm run seed -- --user <clerkUserId> --email <email> [--name <name>] [--role <roleKey>] [--tenant <tenantId>] [--demo]';
+  'Usage: npm run seed -- --tenant <slug|id> --user <clerkUserId> --email <email> [--name <name>] [--role <roleKey>] [--demo]';
 
 const sampleVehicles = [
   {
@@ -136,17 +136,20 @@ async function main() {
       email: { type: 'string' },
       name: { type: 'string' },
       role: { type: 'string', default: 'owner' },
-      tenant: { type: 'string', default: SHENALY_TENANT_ID },
+      tenant: { type: 'string' },
       demo: { type: 'boolean', default: false }
     }
   });
-  if (!values.user || !values.email) throw new Error(USAGE);
+  if (!values.tenant || !values.user || !values.email) throw new Error(USAGE);
   if (!process.env.MONGODB_URI) throw new Error('Set MONGODB_URI in .env');
 
   const platformDb = connectPlatformDb({ uri: process.env.MONGODB_URI, dbName: process.env.PLATFORM_DB_NAME || 'platform' });
   try {
     await platformDb.asPromise();
-    const db = createTenantDbGetter(platformDb)(tenantDbName(values.tenant));
+    const { Tenant } = platformDb.models;
+    const tenant = await Tenant.findOne(isObjectIdOrHexString(values.tenant) ? { _id: values.tenant } : { slug: values.tenant }).lean();
+    if (!tenant) throw new Error(`No tenant "${values.tenant}" in the platform database. Create it from the admin dashboard first.`);
+    const db = createTenantDbGetter(platformDb)(tenant.dbName);
     await initTenantDb(db);
     console.log(`Prepared ${db.name}: indexes and system roles.`);
 

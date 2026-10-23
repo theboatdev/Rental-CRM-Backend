@@ -1,12 +1,13 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { createApp } = require('../src/app');
-const { createPlatformService } = require('../src/platform/service');
-const { seedDemoTenants } = require('../src/platform/seed');
 const { CONFIG_TEMPLATES } = require('../src/platform/config/templates');
+const { startTestDb } = require('./helpers/db');
+const { createFakeClerk } = require('./helpers/fakeClerk');
+const { seedDemoTenants, DEMO_TENANT_IDS } = require('./helpers/demoTenants');
 
-const SHENALY = '6712a4f0c2b1e93d8a0f1b2c';
-const KANDY = '6712b9e1d4c3a2f1e0d9c8b7';
+const SHENALY = DEMO_TENANT_IDS.shenaly;
+const KANDY = DEMO_TENANT_IDS.kandyHill;
 const limits = { maxVehicles: 10, maxUsers: 3, storageGb: 2 };
 
 // Stands in for Clerk: the x-test-role header decides who is calling.
@@ -18,17 +19,23 @@ function stubAuth(req, res, next) {
   next();
 }
 
+let db;
 let server;
 let baseUrl;
 
 before(async () => {
-  const app = createApp({ platformAuth: stubAuth, service: createPlatformService({ seed: seedDemoTenants }) });
+  db = await startTestDb();
+  await seedDemoTenants(db.platformDb.models);
+  const app = createApp({ platformAuth: stubAuth, platformDb: db.platformDb, clerk: createFakeClerk() });
   server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}/api/platform`;
 });
 
-after(() => server.close());
+after(async () => {
+  if (server) await new Promise((resolve) => server.close(resolve));
+  await db?.stop();
+});
 
 async function call(method, path, body, role = 'super_admin') {
   const res = await fetch(`${baseUrl}${path}`, {
@@ -155,5 +162,6 @@ describe('platform API', () => {
 
   it('returns 404 for unknown tenants', async () => {
     assert.equal((await call('GET', '/tenants/000000000000000000000000')).status, 404);
+    assert.equal((await call('GET', '/tenants/not-an-id')).status, 404);
   });
 });

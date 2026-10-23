@@ -2,26 +2,27 @@ const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const mongoose = require('mongoose');
-const { MongoMemoryReplSet } = require('mongodb-memory-server');
 const { createApp } = require('../src/app');
-const { connectPlatformDb } = require('../src/db/platform');
-const { createTenantDbGetter, initTenantDb } = require('../src/db/tenantDb');
+const { initTenantDb } = require('../src/db/tenantDb');
 const { createTenantRouter } = require('../src/routes/tenant');
 const { handle } = require('../src/routes/handle');
 const { errorHandler } = require('../src/middleware/errorHandler');
 const { createTenantAuth } = require('../src/middleware/tenantAuth');
 const { requireModule, requirePermission, resolveTenant } = require('../src/middleware/tenantContext');
 const { createPlatformService } = require('../src/platform/service');
-const { seedDemoTenants, SHENALY_TENANT_ID } = require('../src/platform/seed');
 const { forbidden, notFound, unauthenticated } = require('../src/platform/errors');
-const { PLATFORM_MODEL_NAMES } = require('../src/models/platform');
+const { PLATFORM_MODEL_NAMES, registerPlatformModels } = require('../src/models/platform');
 const { TENANT_MODEL_NAMES } = require('../src/models/tenant');
 const { SYSTEM_ROLES } = require('../src/platform/rbac/permissions');
+const { startTestDb } = require('./helpers/db');
+const { createFakeClerk, orgIdFor } = require('./helpers/fakeClerk');
+const { seedDemoTenants, DEMO_TENANT_IDS } = require('./helpers/demoTenants');
 
 // Org A is the seeded Shenaly tenant (Sri Lanka template, every module on).
-// Org B is created below from the base template (WhatsApp digest off), then fuel logs are switched off.
-const ORG_A = 'org_mock_shenaly';
-const ORG_B = 'org_mock_galle_fort';
+// Org B is provisioned below from the base template (WhatsApp digest off), then fuel logs are switched off.
+const SHENALY_TENANT_ID = DEMO_TENANT_IDS.shenaly;
+const ORG_A = orgIdFor('shenaly');
+const ORG_B = orgIdFor('galle-fort');
 const ADMIN = { id: 'user_test_admin', name: 'Test Admin' };
 
 // Stands in for Clerk: x-test-user and x-test-org are the session's user and active organization.
@@ -35,9 +36,10 @@ function stubTenantAuth(req, res, next) {
 }
 const denyPlatform = (req, res, next) => next(forbidden('Not under test'));
 
-let replSet;
+let db;
 let platformDb;
 let getTenantDb;
+let clerk;
 let service;
 let tenantB;
 let vehicleB;
@@ -65,13 +67,14 @@ let app; // createApp, as server.js builds it
 let probe; // createTenantRouter plus stand-ins for the feature routes later phases add
 
 before(async () => {
-  replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
-  platformDb = connectPlatformDb({ uri: replSet.getUri(), dbName: 'platform' });
-  await platformDb.asPromise();
-  getTenantDb = createTenantDbGetter(platformDb);
+  db = await startTestDb();
+  ({ platformDb, getTenantDb } = db);
+  await seedDemoTenants(platformDb.models);
+  clerk = createFakeClerk();
+  service = createPlatformService({ platformDb, getTenantDb, clerk });
 
-  service = createPlatformService({ seed: seedDemoTenants });
-  ({ tenant: tenantB } = service.createTenant(
+  // Provisioning initializes tenant B's database; the seeded Shenaly's is initialized here.
+  ({ tenant: tenantB } = await service.createTenant(
     {
       name: 'Galle Fort Drives',
       slug: 'galle-fort',
@@ -81,14 +84,14 @@ before(async () => {
     },
     ADMIN
   ));
-  const active = service.getActiveConfig(tenantB.id);
+  const active = await service.getActiveConfig(tenantB.id);
   const config = structuredClone(active.config);
   config.modules.fuelLogs.enabled = false;
-  service.publishConfig(tenantB.id, { config, note: 'Switch fuel logs off', baseVersion: active.version }, ADMIN);
+  await service.publishConfig(tenantB.id, { config, note: 'Switch fuel logs off', baseVersion: active.version }, ADMIN);
 
   const dbA = getTenantDb(`tenant_${SHENALY_TENANT_ID}`);
   const dbB = getTenantDb(tenantB.dbName);
-  await Promise.all([initTenantDb(dbA), initTenantDb(dbB)]);
+  await initTenantDb(dbA);
   await dbA.models.Member.insertMany([
     { clerkUserId: 'user_a_owner', email: 'owner@a.example', name: 'Ava Owner', roleKey: 'owner' },
     { clerkUserId: 'user_a_staff', email: 'staff@a.example', name: 'Sam Staff', roleKey: 'staff' },
@@ -105,9 +108,9 @@ before(async () => {
   await dbA.models.FuelLog.create({ vehicle: vehicleA._id, liters: 36, totalCost: 14904 });
   await dbB.models.FuelLog.create({ vehicle: vehicleB._id, liters: 30, totalCost: 52 });
 
-  app = caller(await listen(createApp({ platformAuth: denyPlatform, tenantAuth: stubTenantAuth, platformDb, service })));
+  app = caller(await listen(createApp({ platformAuth: denyPlatform, tenantAuth: stubTenantAuth, platformDb, clerk })));
 
-  const router = createTenantRouter({ tenantAuth: stubTenantAuth, platformDb, directory: service, cacheTtlMs: 0 });
+  const router = createTenantRouter({ tenantAuth: stubTenantAuth, platformDb, getTenantDb, directory: service, cacheTtlMs: 0 });
   const vehiclesRead = [requireModule('vehicles'), requirePermission('vehicles:read')];
   router.get('/vehicles', vehiclesRead, handle((req) => req.models.Vehicle.find().lean()));
   router.get(
@@ -126,8 +129,7 @@ before(async () => {
 
 after(async () => {
   await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
-  await platformDb?.close();
-  await replSet?.stop();
+  await db?.stop();
 });
 
 const A_OWNER = { user: 'user_a_owner', org: ORG_A };
@@ -148,7 +150,7 @@ describe('tenant API', () => {
     assert.deepEqual(owner.body.tenant, { id: SHENALY_TENANT_ID, name: 'Shenaly Rent a Car', slug: 'shenaly' });
     assert.equal(owner.body.user.name, 'Ava Owner');
     assert.deepEqual(owner.body.role, { key: 'owner', name: 'Owner', system: true });
-    assert.equal(owner.body.configVersion, service.getActiveConfig(SHENALY_TENANT_ID).version);
+    assert.equal(owner.body.configVersion, (await service.getActiveConfig(SHENALY_TENANT_ID)).version);
     assert.ok(owner.body.permissions.includes('financials:view'));
 
     const staff = await app('GET', '/api/v1/me', A_STAFF);
@@ -166,7 +168,7 @@ describe('tenant API', () => {
   it('serves the active config with an ETag', async () => {
     const first = await app('GET', '/api/v1/config', A_OWNER);
     assert.equal(first.status, 200);
-    assert.equal(first.body.version, service.getActiveConfig(SHENALY_TENANT_ID).version);
+    assert.equal(first.body.version, (await service.getActiveConfig(SHENALY_TENANT_ID)).version);
     assert.equal(first.body.config.branding.displayName, 'Shenaly Rent a Car');
     assert.equal(first.headers.get('cache-control'), 'private, no-cache');
 
@@ -180,8 +182,8 @@ describe('tenant API', () => {
   it("refuses organizations that aren't active tenants", async () => {
     const cases = [
       ['org_unknown', /isn't set up/],
-      ['org_mock_coastal_drive', /suspended/],
-      ['org_mock_kandy_hill', /provisioning/]
+      [orgIdFor('coastal-drive'), /suspended/],
+      [orgIdFor('kandy-hill'), /provisioning/]
     ];
     for (const [org, message] of cases) {
       const { status, body } = await app('GET', '/api/v1/me', { user: 'user_a_owner', org });
@@ -229,15 +231,15 @@ describe('tenant isolation and enforcement (Phase 1 exit criteria)', () => {
   });
 
   it('a published config change applies to the next request', async () => {
-    const publish = (enabled) => {
-      const active = service.getActiveConfig(tenantB.id);
+    const publish = async (enabled) => {
+      const active = await service.getActiveConfig(tenantB.id);
       const config = structuredClone(active.config);
       config.modules.fuelLogs.enabled = enabled;
-      service.publishConfig(tenantB.id, { config, note: `Fuel logs ${enabled ? 'on' : 'off'}`, baseVersion: active.version }, ADMIN);
+      await service.publishConfig(tenantB.id, { config, note: `Fuel logs ${enabled ? 'on' : 'off'}`, baseVersion: active.version }, ADMIN);
     };
-    publish(true);
+    await publish(true);
     assert.equal((await probe('GET', '/api/v1/fuel-logs', B_OWNER)).status, 200);
-    publish(false);
+    await publish(false);
     assert.equal((await probe('GET', '/api/v1/fuel-logs', B_OWNER)).status, 404);
   });
 
@@ -339,12 +341,15 @@ describe('app wiring', () => {
     const noDb = caller(await listen(createApp({ platformAuth: denyPlatform, tenantAuth: stubTenantAuth })));
     assert.equal((await noDb('GET', '/api/v1/me', A_OWNER)).body.error.code, 'database_not_configured');
 
-    const down = caller(await listen(createApp({ platformAuth: denyPlatform, tenantAuth: stubTenantAuth, platformDb: { readyState: 0 } })));
+    // A connection that was never opened stands in for an unreachable database.
+    const idle = mongoose.createConnection();
+    registerPlatformModels(idle);
+    const down = caller(await listen(createApp({ platformAuth: denyPlatform, tenantAuth: stubTenantAuth, platformDb: idle, clerk })));
     const unavailable = await down('GET', '/api/v1/me', A_OWNER);
     assert.equal(unavailable.status, 503);
     assert.equal(unavailable.body.error.code, 'database_unavailable');
 
-    const noClerk = caller(await listen(createApp({ platformAuth: denyPlatform, tenantAuth: createTenantAuth({}), platformDb, service })));
+    const noClerk = caller(await listen(createApp({ platformAuth: denyPlatform, tenantAuth: createTenantAuth({}), platformDb, clerk })));
     assert.equal((await noClerk('GET', '/api/v1/me')).body.error.code, 'auth_not_configured');
   });
 });
