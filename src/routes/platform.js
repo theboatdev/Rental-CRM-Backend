@@ -1,19 +1,8 @@
 const express = require('express');
+const { handle } = require('./handle');
 const { getPlatformMeta } = require('../platform/meta');
 const { validateConfig } = require('../platform/service');
 const { invalid } = require('../platform/errors');
-
-/**
- * Wraps a handler that returns the response body (or a promise of it) so
- * thrown errors and rejections reach the error middleware.
- */
-const handle =
-  (fn, status = 200) =>
-  (req, res, next) =>
-    Promise.resolve()
-      .then(() => fn(req, res))
-      .then((body) => res.status(status).json(body))
-      .catch(next);
 
 /**
  * Accepts a config either as JSON (`config`) or as the raw text of an

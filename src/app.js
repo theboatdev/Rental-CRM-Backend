@@ -1,15 +1,22 @@
 const express = require('express');
 const cors = require('cors');
 const { createPlatformRouter } = require('./routes/platform');
+const { createTenantRouter } = require('./routes/tenant');
 const { createPlatformService } = require('./platform/service');
 const { seedDemoTenants } = require('./platform/seed');
-const { PlatformError } = require('./platform/errors');
+const { errorHandler } = require('./middleware/errorHandler');
+const { isConnected } = require('./db/platform');
 
 /**
- * Builds the Express app. `platformAuth` guards /api/platform (Clerk in
- * server.js, a stub in tests); `service` defaults to the seeded in-memory store.
+ * Builds the Express app.
+ * - `platformAuth` guards /api/platform and `tenantAuth` starts the /api/v1
+ *   chain (Clerk in server.js, stubs in tests).
+ * - `platformDb` is the platform connection; tenant DBs are reached through it.
+ *   Without it, /api/v1 responds 503.
+ * - `service` defaults to the seeded in-memory store. It also resolves tenants
+ *   for /api/v1, so both APIs see the same tenants.
  */
-function createApp({ platformAuth, service = createPlatformService({ seed: seedDemoTenants }) }) {
+function createApp({ platformAuth, tenantAuth, platformDb, service = createPlatformService({ seed: seedDemoTenants }) }) {
   const app = express();
 
   app.use(cors());
@@ -18,30 +25,18 @@ function createApp({ platformAuth, service = createPlatformService({ seed: seedD
 
   // Health Check
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'healthy', project: 'Shenaly Rent a Car Operations API', timestamp: new Date() });
+    res.json({
+      status: 'healthy',
+      project: 'Shenaly Rent a Car Operations API',
+      database: platformDb ? (isConnected(platformDb) ? 'connected' : 'disconnected') : 'not_configured',
+      timestamp: new Date()
+    });
   });
 
   app.use('/api/platform', createPlatformRouter({ service, platformAuth }));
+  app.use('/api/v1', createTenantRouter({ tenantAuth, platformDb, directory: service }));
 
-  // Placeholder for tenant API routers (Phase 1+)
-  // app.use('/api/v1/vehicles', require('./routes/vehicleRoutes'));
-  // app.use('/api/v1/renters', require('./routes/renterRoutes'));
-  // app.use('/api/v1/rentals', require('./routes/rentalRoutes'));
-  // app.use('/api/v1/costs', require('./routes/costRoutes'));
-  // app.use('/api/v1/payments', require('./routes/paymentRoutes'));
-  // app.use('/api/v1/whatsapp', require('./routes/whatsappRoutes'));
-
-  // Error handler middleware
-  app.use((err, req, res, next) => {
-    if (err instanceof PlatformError) {
-      return res.status(err.status).json({ error: { code: err.code, message: err.message, issues: err.issues } });
-    }
-    if (err.type === 'entity.parse.failed') {
-      return res.status(400).json({ error: { code: 'invalid_json', message: 'Request body is not valid JSON' } });
-    }
-    console.error(err.stack);
-    res.status(err.status || 500).json({ error: { code: 'internal', message: 'Internal Server Error' } });
-  });
+  app.use(errorHandler);
 
   return app;
 }

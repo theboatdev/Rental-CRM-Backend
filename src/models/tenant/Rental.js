@@ -1,0 +1,48 @@
+const { Schema } = require('mongoose');
+const actorSchema = require('../actor');
+const { RENTAL_STATUSES, SOURCES } = require('./enums');
+
+const inspectionSchema = new Schema(
+  {
+    at: { type: Date, default: Date.now },
+    by: { type: actorSchema },
+    odometer: { type: Number },
+    // One photo per entry in modules.rentals.inspectionPoints.
+    photos: [new Schema({ point: { type: String, required: true }, fileKey: { type: String } }, { _id: false })],
+    notes: { type: String }
+  },
+  { _id: false }
+);
+
+const rentalSchema = new Schema(
+  {
+    code: { type: String, required: true }, // RNT-2026-0042, or BK-… while reserved; prefixes from rules.codePrefixes
+    renter: { type: Schema.Types.ObjectId, ref: 'Renter', required: true },
+    vehicle: { type: Schema.Types.ObjectId, ref: 'Vehicle', required: true },
+    status: { type: String, enum: RENTAL_STATUSES, default: 'RESERVED' },
+    source: { type: String, enum: SOURCES, default: 'COUNTER' },
+    startDate: { type: Date, required: true },
+    endDate: { type: Date, required: true },
+    actualReturnDate: { type: Date },
+    totalDays: { type: Number, required: true, min: 1 },
+    dailyRate: { type: Number, required: true, min: 0 },
+    totalAmount: { type: Number, required: true, min: 0 },
+    depositAmount: { type: Number, required: true, min: 0 },
+    paidAmount: { type: Number, default: 0, min: 0 }, // sum of non-voided payments, updated in the same transaction
+    depositRefunded: { type: Boolean, default: false },
+    startMileage: { type: Number },
+    endMileage: { type: Number },
+    pickupInspection: { type: inspectionSchema },
+    dropInspection: { type: inspectionSchema },
+    cancelledAt: { type: Date },
+    createdBy: { type: actorSchema },
+    notes: { type: String }
+  },
+  { collection: 'rentals', timestamps: true }
+);
+
+rentalSchema.index({ code: 1 }, { unique: true });
+rentalSchema.index({ vehicle: 1, status: 1, startDate: 1 }); // availability checks
+rentalSchema.index({ renter: 1, startDate: -1 });
+
+module.exports = rentalSchema;

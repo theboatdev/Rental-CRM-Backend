@@ -1,10 +1,18 @@
 /**
  * Demo tenants for the in-memory platform store: Shenaly (tenant #1, migrated
  * from the single-tenant demo) plus two tenants covering other lifecycle states.
+ *
+ * Their Clerk organization ids are mocks (`org_mock_<slug>`). To call /api/v1
+ * as a real Clerk user before provisioning creates real organizations, link a
+ * slug to a real organization with `clerkOrgIds` (SEED_CLERK_ORG_IDS in server.js).
  */
 const SEED_ADMIN = { id: 'user_seed_admin', name: 'Platform Admin' };
 
-function seedDemoTenants({ insertTenant, record, createConfigFromTemplate, PROVISIONER }) {
+const SHENALY_TENANT_ID = '6712a4f0c2b1e93d8a0f1b2c';
+
+function seedDemoTenants({ insertTenant: insert, record, createConfigFromTemplate, PROVISIONER }, { clerkOrgIds = {} } = {}) {
+  const insertTenant = (tenant, ...rest) => insert({ ...tenant, clerkOrgId: clerkOrgIds[tenant.slug] }, ...rest);
+
   const shenalyLimits = { maxVehicles: 50, maxUsers: 10, storageGb: 5 };
   const shenalyV1 = createConfigFromTemplate('sri-lanka', {
     branding: {
@@ -23,7 +31,7 @@ function seedDemoTenants({ insertTenant, record, createConfigFromTemplate, PROVI
   shenalyV2.modules.whatsappDigest.recipients = ['+94770000000'];
   insertTenant(
     {
-      id: '6712a4f0c2b1e93d8a0f1b2c',
+      id: SHENALY_TENANT_ID,
       name: 'Shenaly Rent a Car',
       slug: 'shenaly',
       status: 'active',
@@ -109,4 +117,4 @@ function seedDemoTenants({ insertTenant, record, createConfigFromTemplate, PROVI
   });
 }
 
-module.exports = { seedDemoTenants };
+module.exports = { seedDemoTenants, SHENALY_TENANT_ID };

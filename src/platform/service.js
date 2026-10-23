@@ -77,7 +77,7 @@ function createPlatformService({ seed } = {}) {
     store.tenants.set(tenant.id, {
       ...tenant,
       dbName: tenantDbName(tenant.id),
-      clerkOrgId: clerkOrgIdFor(tenant.slug),
+      clerkOrgId: tenant.clerkOrgId ?? clerkOrgIdFor(tenant.slug),
       activeConfigVersion: latest?.version ?? null,
       currency: latest?.config.locale.currency ?? null,
       limits: latest?.config.limits ?? tenant.limits,
@@ -124,6 +124,12 @@ function createPlatformService({ seed } = {}) {
 
     getTenant(tenantId) {
       return present(requireTenant(tenantId));
+    },
+
+    /** For the tenant API: the tenant linked to a Clerk organization, with its active config, or null. */
+    findTenantByClerkOrgId(clerkOrgId) {
+      const tenant = [...store.tenants.values()].find((t) => t.clerkOrgId === clerkOrgId);
+      return tenant ? { tenant: present(tenant), activeConfig: service.getActiveConfig(tenant.id) } : null;
     },
 
     getProvisioningJob(tenantId) {

@@ -34,6 +34,9 @@ function tenantDbName(tenantId) {
   return `tenant_${tenantId}`;
 }
 
+/** True for names `tenantDbName` produces, so `platform`, `admin` and the like are never opened as a tenant DB. */
+const isTenantDbName = (name) => /^tenant_[a-zA-Z0-9]{8,40}$/.test(name);
+
 const PROVISIONING_STEPS = [
   { key: 'create_tenant_record', label: 'Create tenant record' },
   { key: 'create_clerk_org', label: 'Create Clerk organization' },
@@ -65,6 +68,7 @@ module.exports = {
   RESERVED_SLUGS,
   TenantSlugSchema,
   tenantDbName,
+  isTenantDbName,
   PROVISIONING_STEPS,
   CreateTenantInputSchema
 };

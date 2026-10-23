@@ -23,27 +23,35 @@ Phases build on each other. Each one ends with something that runs and is tested
   - Pages: overview, tenants list, create-tenant wizard, tenant detail with lifecycle actions, config editor (form tabs + Monaco raw JSON with schema autocomplete, upload/download, backend validation, diff, publish), config history with restore, and the audit log.
 - **Docs:** this folder.
 
-## Phase 1: Backend multi-tenancy core
+## Phase 1: Backend multi-tenancy core ✅
 
-- **Connections.**
-  - `src/db/platform.js` connects to the platform DB.
-  - `src/db/tenantDb.js` provides `getTenantDb(dbName)` via `useDb(…, { useCache: true })` and registers the tenant models on that connection.
+- **Connections** (`src/db/`).
+  - `platform.js`: `connectPlatformDb()` opens the platform DB with `mongoose.createConnection`, so nothing is ever registered on the global connection. The server starts without a database; `/api/v1` then responds 503.
+  - `tenantDb.js`:
+    - `createTenantDbGetter(platformDb)` returns `getTenantDb(dbName)`, which uses `useDb(…, { useCache: true })`, registers the tenant models on that connection and refuses any name that isn't `tenant_<id>`.
+    - `initTenantDb(db)` builds the indexes and upserts the system roles. It's idempotent; Phase 2 provisioning calls it.
+  - Indexes are never built implicitly (`autoIndex: false`).
 - **Models.**
-  - Split into `src/models/platform/` (Tenant, TenantConfig, ProvisioningJob, TenantSecret, AuditLog) and `src/models/tenant/`.
-  - Tenant models export schemas instead of calling `mongoose.model`, and their enums are aligned with the frontend.
-  - Add `Member`, `Role`, `FuelLog`, `Counter`, `AuditLog`.
-- **Auth.** The tenant middleware chain `clerkMiddleware → resolveTenant → loadMember → requireModule → requirePermission`. The platform routes already use `clerkMiddleware → requirePlatformAdmin`.
-- **Endpoints:** `GET /api/v1/me`, `GET /api/v1/config`.
-- **Dependency cleanup.** Remove `bcryptjs` and `jsonwebtoken`; Clerk replaces them.
-- **Tests.** Node's test runner + `mongodb-memory-server` (replica set, for transactions), including **tenant isolation tests**.
+  - `src/models/platform/`: Tenant, TenantConfig, ProvisioningJob, TenantSecret, AuditLog.
+  - `src/models/tenant/`: Member, Role, Vehicle, Renter, Rental, Payment, VehicleCost, FuelLog, Counter, AuditLog. `User` is replaced by `Member`.
+  - Every model file exports a schema. Enums are uppercase keys aligned with the frontend (`enums.js`). Document types, payment methods and cost categories store config list keys. `src/constants/` is gone.
+  - See [database-schema.md](database-schema.md).
+- **Auth.** The tenant chain is `clerkMiddleware → requireOrgSession → database check → resolveTenant → loadMember → requireModule → requirePermission`.
+  - `resolveTenant` finds the tenant through the platform service (`findTenantByClerkOrgId`), so `/api/platform` and `/api/v1` see the same tenants while they're in memory. Lookups are cached for 60 s.
+- **Endpoints:** `GET /api/v1/me`, `GET /api/v1/config` (with an ETag).
+- **Dependency cleanup.** Removed `bcryptjs` and `jsonwebtoken`.
+- **Local development.**
+  - `npm run seed` prepares a tenant DB and adds you as a member.
+  - `SEED_CLERK_ORG_IDS` links the seeded tenants to real Clerk organizations. See [clerk-setup.md](clerk-setup.md#7-call-the-tenant-api-locally).
+- **Tests.** `test/tenancy.test.js` runs on `mongodb-memory-server` (a replica set, so transactions work). It covers tenant isolation, module and permission enforcement, the DB layer and the app wiring. 73 tests in all.
 
-Exit: a request with an org A token can't read org B data; a disabled module returns 404; a missing permission returns 403.
+Exit (met, see `test/tenancy.test.js`): a request with an org A token can't read org B data; a disabled module returns 404; a missing permission returns 403.
 
 ## Phase 2: Real provisioning and storage
 
 - **Real provisioning.** The provisioning job runner executes the steps for real (idempotent, with retry): Clerk organization, tenant database with indexes and roles, config v1, Owner invitation.
 - **Clerk.** Create the org and send the Owner invitation during provisioning. The `/webhooks/clerk` endpoint (`verifyWebhook`) syncs `members`.
-- **Storage.** Replace the in-memory store in `src/platform/service.js` with the platform DB. The routes and responses stay the same, so the admin dashboard doesn't change.
+- **Storage.** Replace the in-memory store in `src/platform/service.js` with the platform models from Phase 1. The routes and responses stay the same, so the admin dashboard doesn't change. `findTenantByClerkOrgId` becomes a `Tenant` query, so the tenant API follows without changes.
 
 Exit: creating Shenaly from the dashboard produces a Clerk org, a `tenant_<id>` DB with roles, config v1 and an invitation email.
 

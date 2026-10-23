@@ -107,16 +107,22 @@ S3 objects are keyed `tenants/<tenantId>/…` and only reached through short-liv
 
 ## Request lifecycle (tenant API)
 
+The chain is in `src/routes/tenant.js`, `src/middleware/tenantAuth.js` and `src/middleware/tenantContext.js`.
+
 1. **`clerkMiddleware()`** (`@clerk/express`) verifies the bearer session token. `authorizedParties` is limited to the two app origins.
-2. **`resolveTenant`**: `auth.orgId` → `tenants.findOne({ clerkOrgId })`, cached for about 60 s.
+2. **`requireOrgSession`**: 401 without a session, 403 without an active organization. Sets `req.identity = { userId, orgId }`.
+3. **Database check**: 503 while the platform connection is down.
+4. **`resolveTenant`**: `orgId` → `service.findTenantByClerkOrgId(orgId)`, cached for about 60 s. That lookup reads the in-memory store until Phase 2 moves it to `tenants`.
    - The tenant must be `active`, otherwise the API returns 403.
    - `getTenantDb(tenant.dbName)` returns `platformConnection.useDb(dbName, { useCache: true })` with the tenant models registered on it.
-   - Attaches `req.tenant`, `req.config` and `req.models`.
-3. **`loadMember`**: Clerk `userId` → the `members` document → its role → `effectivePermissions(role.permissions, config)`.
-4. **`requireModule('fuelLogs')`** returns 404 when the module is disabled. **`requirePermission('costs:delete')`** returns 403.
-5. **Handler** uses only `req.models.*`.
+   - Attaches `req.tenant`, `req.config`, `req.configVersion` and `req.models`.
+5. **`loadMember`**: Clerk `userId` → the active `members` document → its role → `effectivePermissions(role.permissions, config)`. Sets `req.member`, `req.role` and `req.permissions`. A missing member or role returns 403.
+6. **`requireModule('fuelLogs')`** returns 404 when the module is disabled. **`requirePermission('costs:delete')`** returns 403. Both throw at startup if the module or permission doesn't exist.
+7. **Handler** uses only `req.models.*`.
 
-**Isolation rule:** no tenant model is ever registered on a global connection. The only way to reach tenant data is through `req.models`, which is bound to the caller's tenant DB, so a cross-tenant query can't be written by accident. Phase 1 adds tests that assert an org A token can never read org B data.
+**Isolation rule:** no tenant model is ever registered on a global connection. The only way to reach tenant data is through `req.models`, which is bound to the caller's tenant DB, so a cross-tenant query can't be written by accident. `test/tenancy.test.js` asserts that an org A token can never read org B data, by list or by id.
+
+Because tenants are cached, a suspension or a config publish can take up to 60 s to reach the tenant API.
 
 Platform routes (`/api/platform/*`) skip tenant resolution. They use `requirePlatformAdmin`, which runs `isSuperAdmin(sessionClaims)` from `src/platform/platformRole.js`. The admin dashboard has a small copy of this check for its redirects; the backend's check is the one that counts.
 
@@ -139,7 +145,7 @@ Each step is idempotent and recorded in `provisioning_jobs`, so **Retry** resume
 
 1. **Create tenant record**: status `provisioning`, `dbName = tenant_<tenantId>`. The DB name uses the immutable id, not the renamable slug.
 2. **Create Clerk organization**: same name and slug, `publicMetadata.tenantId`. No `createdBy`, so the super admin doesn't become a member.
-3. **Initialise tenant DB**: sync indexes for all tenant models, seed system roles and counters.
+3. **Initialise tenant DB**: `initTenantDb` (`src/db/tenantDb.js`) syncs the indexes of all tenant models and seeds the system roles. Counters are created on first use.
 4. **Write config v1**: `createConfigFromTemplate(template, { branding, limits })`.
 5. **Invite tenant admin**: Clerk organization invitation with role `org:admin` and `publicMetadata.roleKey = "owner"`.
 6. **Activate**: status `active`.
@@ -174,7 +180,16 @@ The super admin API, under `/api/platform`. Every route requires a Clerk session
 | `POST /tenants/:id/config/versions/:version/restore` | Republish an old version as the newest |
 | `GET /audit?tenantId&limit` | Audit log, newest first |
 
-Errors use one shape: `{ "error": { "code", "message", "issues"? } }`. Codes are `unauthenticated` (401), `forbidden` (403), `not_found` (404), `conflict` (409), `invalid` (422, with field `issues`) and `auth_not_configured` (503).
+Errors use one shape: `{ "error": { "code", "message", "issues"? } }`. Codes are `unauthenticated` (401), `forbidden` (403), `not_found` (404), `conflict` (409), `invalid` (422, with field `issues`) and `auth_not_configured` (503). The tenant API adds `database_not_configured` and `database_unavailable` (503).
+
+## Tenant API
+
+Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) chain. Feature routes arrive with Phases 3 and 4.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /me` | `{ user, tenant, role, permissions, configVersion }`: who the caller is in this tenant and their effective permissions |
+| `GET /config` | `{ version, config }`: the active config. It has an ETag and `Cache-Control: private, no-cache`, so revalidation returns 304 |
 
 ## Repositories
 

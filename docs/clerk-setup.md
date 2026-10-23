@@ -67,6 +67,29 @@ To check the setup:
 - **Signed in as a super admin:** you see the overview, with Shenaly and two demo tenants from the backend's in-memory store.
 - **Backend stopped:** pages show "Couldn't load data from the platform API".
 
+## 7. Call the tenant API locally
+
+Until provisioning creates real organizations (Phase 2), the seeded tenants have mock organization ids, and nobody is a member of them. To call `/api/v1` as yourself:
+
+1. In the Clerk dashboard, under **Organizations**, create an organization (e.g. "Shenaly Rent a Car") and add yourself as a member. Copy its id (`org_…`) and your user id (`user_…`).
+2. In the backend's `.env`, set `MONGODB_URI` and link the organization to a seeded tenant:
+
+   ```sh
+   SEED_CLERK_ORG_IDS=shenaly=org_…
+   ```
+
+3. Prepare the tenant database and add yourself as its owner. `--demo` adds sample vehicles and renters.
+
+   ```sh
+   npm run seed -- --user user_… --email you@example.com --name "Your Name" --demo
+   ```
+
+   `--role staff` (or `manager`, `accountant`) tries another role. `--tenant <id>` targets another tenant; the default is Shenaly.
+
+4. Restart the backend. Call `GET /api/v1/me` with a session token whose active organization is that organization. Activate it in the app, or get a token with `getToken()` after `setActive({ organization })`.
+
+The seed script writes to the database in `MONGODB_URI`. It's idempotent, so running it again updates your member record and skips demo data the tenant already has.
+
 ## Later phases
 
 - **Phase 2, webhooks.** Add a webhook endpoint pointing at `<backend>/webhooks/clerk` for these events:

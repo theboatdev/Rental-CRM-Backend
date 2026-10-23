@@ -84,7 +84,7 @@ Tenant admins (`roles:manage`) create roles in the tenant app's settings:
 ## Enforcement
 
 - **API (source of truth).** `requirePermission('payments:void')` on every route, after `loadMember` computes effective permissions. Disabled modules return 404 through `requireModule` before permissions are checked.
-- **Tenant app (UX only).** `GET /api/v1/me` returns `{ user, role, permissions, config }`. `<Can permission="financials:view">` and `useCan()` hide what the user can't use. Hiding UI is never the protection.
+- **Tenant app (UX only).** `GET /api/v1/me` returns `{ user, tenant, role, permissions, configVersion }`; the config itself comes from `GET /api/v1/config`. `<Can permission="financials:view">` and `useCan()` hide what the user can't use. Hiding UI is never the protection.
 - **Field-level rule.** Responses drop profit and margin fields unless the caller has `financials:view`, so a Staff user can't read them from the network tab.
 
 ## Super admins are separate
