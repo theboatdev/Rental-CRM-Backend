@@ -116,7 +116,9 @@ The chain is in `src/routes/tenant.js`, `src/middleware/tenantAuth.js` and `src/
    - The tenant must be `active`, otherwise the API returns 403.
    - `getTenantDb(tenant.dbName)` returns `platformConnection.useDb(dbName, { useCache: true })` with the tenant models registered on it.
    - Attaches `req.tenant`, `req.config`, `req.configVersion` and `req.models`.
-5. **`loadMember`**: Clerk `userId` → the active `members` document → its role → `effectivePermissions(role.permissions, config)`. Sets `req.member`, `req.role` and `req.permissions`. A missing member or role returns 403.
+5. **`loadMember`**: Clerk `userId` → the active `members` document → its role → `effectivePermissions(role.permissions, config)`. Sets `req.member`, `req.role` and `req.permissions`.
+   - A missing member record gets one chance to be created from the caller's Clerk membership (`syncFromClerk`, below). That covers people who arrive before Clerk's webhook.
+   - A missing member or role returns 403.
 6. **`requireModule('fuelLogs')`** returns 404 when the module is disabled. **`requirePermission('costs:delete')`** returns 403. Both throw at startup if the module or permission doesn't exist.
 7. **Handler** uses only `req.models.*`.
 
@@ -172,6 +174,8 @@ All Clerk calls go through `src/platform/clerk.js`; tests swap in a fake.
 
 Membership events also refresh the tenant's `usage.members`.
 
+The webhook isn't the only way in. When someone reaches the tenant API without a member record, `loadMember` asks Clerk for their membership (`syncFromClerk`) and applies it with the same rules. That covers someone who opens the app right after accepting an invitation, before the webhook arrives, and local setups without a webhook tunnel. A miss is remembered for 30 seconds, so non-members don't send every request to Clerk.
+
 Clerk can deliver an event twice or out of order. Each member keeps the time of the last applied event (`membershipSyncedAt`, `profileSyncedAt`), and an older event is skipped. A deletion also records a member we never saw, so a late "created" can't bring them back.
 
 Responses: 200 when handled; 400 for a bad signature (no retry); 503 when the secret or the database is missing (Clerk retries with backoff).
@@ -181,7 +185,12 @@ Responses: 200 when handled; 400 for a bad signature (no retry); 503 when the se
 - **Suspend**: the API returns 403 and data is kept.
 - **Reactivate.**
 - **Archive**: read-only and hidden.
-- **Hard delete**: drops the DB and the Clerk org. It needs a two-step confirmation and only runs after a retention period.
+- **Delete**: permanent, from the tenant page's **Delete tenant** button (`DELETE /api/platform/tenants/:id`, `service.deleteTenant`).
+  - Only for an archived tenant, or one whose provisioning failed. The super admin must type the tenant's slug to confirm.
+  - Deletes the Clerk organization (with its memberships and pending invitations), drops the tenant database, and removes its configs, provisioning job and secrets. The slug becomes free again.
+  - The platform audit log keeps the tenant's history plus a `tenant.deleted` entry.
+  - Members' Clerk accounts are kept; they lose only this workspace.
+  - Each step can run again, so a deletion that failed half-way (e.g. Clerk down) can be retried.
 
 The allowed transitions are in `TENANT_STATUS_TRANSITIONS` (`src/platform/tenants/rules.js`); tenant responses include the ones currently allowed as `allowedTransitions`.
 
@@ -196,6 +205,7 @@ The super admin API, under `/api/platform`. Every route requires a Clerk session
 | `GET /stats` | Tenant counts by status, total members and vehicles, failed provisioning jobs |
 | `GET /tenants` · `POST /tenants` | List tenants · create and provision one |
 | `GET /tenants/:id` · `PATCH /tenants/:id/status` | Tenant detail · suspend, reactivate or archive |
+| `DELETE /tenants/:id` | Delete for good (`{ confirmSlug }`): archived or failed-provisioning tenants only |
 | `GET /tenants/:id/provisioning` · `POST …/provisioning/retry` | Provisioning job · retry its failed steps |
 | `GET /tenants/:id/config` | Active config version |
 | `GET /tenants/:id/config/versions` | History, newest first, each with its changes from the previous version |

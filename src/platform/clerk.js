@@ -58,6 +58,13 @@ function createClerkGateway({ secretKey, invitationRedirectUrl }) {
       return organization.id;
     },
 
+    /** Deletes an organization with its memberships and invitations. One that's already gone counts as deleted. */
+    async deleteOrganization(organizationId) {
+      await clerk.organizations.deleteOrganization(organizationId).catch((error) => {
+        if (!isNotFound(error)) throw error;
+      });
+    },
+
     /** Invites the tenant admin as Owner, unless they're already a member or have a pending invitation. */
     async ensureOwnerInvitation({ organizationId, emailAddress }) {
       const members = await clerk.organizations.getOrganizationMembershipList({ organizationId, emailAddress: [emailAddress] });
@@ -104,6 +111,24 @@ function createClerkGateway({ secretKey, invitationRedirectUrl }) {
       await clerk.organizations.deleteOrganizationMembership({ organizationId, userId }).catch((error) => {
         if (!isNotFound(error)) throw error;
       });
+    },
+
+    /**
+     * A user's membership of an organization, in the shape of a Clerk webhook's
+     * membership data (so the webhook sync can apply it), or null.
+     */
+    async getMembership({ organizationId, userId }) {
+      const { data } = await clerk.organizations.getOrganizationMembershipList({ organizationId, userId: [userId], limit: 1 });
+      const membership = data[0];
+      if (!membership) return null;
+      const user = membership.publicUserData ?? {};
+      return {
+        role: membership.role,
+        public_metadata: membership.publicMetadata ?? {},
+        organization: { id: organizationId },
+        public_user_data: { user_id: user.userId, identifier: user.identifier, first_name: user.firstName, last_name: user.lastName },
+        updated_at: membership.updatedAt
+      };
     },
 
     /** Ids of the organizations a user belongs to. */

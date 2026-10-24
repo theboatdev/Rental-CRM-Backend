@@ -47,6 +47,7 @@ function createPlatformRouter({ service, tenantUsers, platformAuth, platformDb }
   router.post('/tenants', handle((req) => service.createTenant(req.body, req.actor), 201));
   router.get('/tenants/:tenantId', handle((req) => service.getTenant(req.params.tenantId)));
   router.patch('/tenants/:tenantId/status', handle((req) => service.setTenantStatus(req.params.tenantId, req.body?.status, req.actor)));
+  router.delete('/tenants/:tenantId', handle((req) => service.deleteTenant(req.params.tenantId, { confirmSlug: req.body?.confirmSlug }, req.actor)));
 
   router.get('/tenants/:tenantId/provisioning', handle((req) => service.getProvisioningJob(req.params.tenantId)));
   router.post('/tenants/:tenantId/provisioning/retry', handle((req) => service.retryProvisioning(req.params.tenantId, req.actor)));

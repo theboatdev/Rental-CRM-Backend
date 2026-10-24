@@ -146,7 +146,20 @@ function createMemberSync({ platformDb, getTenantDb, clerk }) {
     }
   }
 
-  return { handle };
+  /**
+   * Creates (or re-activates) a member straight from their Clerk membership,
+   * for someone who reaches the tenant API before Clerk's webhook does: right
+   * after accepting an invitation, or locally without a webhook tunnel. The
+   * webhook's rules apply, including the event-time check, so a removal
+   * recorded after this membership last changed still wins.
+   */
+  async function syncFromClerk({ orgId, userId }) {
+    const membership = await clerk.getMembership({ organizationId: orgId, userId });
+    if (!membership) return false;
+    return syncMembership(membership, new Date(membership.updated_at ?? Date.now()));
+  }
+
+  return { handle, syncFromClerk };
 }
 
 module.exports = { createMemberSync, CLERK_ACTOR, DEFAULT_MEMBER_ROLE_KEY };

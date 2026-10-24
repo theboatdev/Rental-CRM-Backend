@@ -45,7 +45,7 @@ function createApp({ platformAuth, tenantAuth = createTenantAuth({}), platformDb
   });
 
   app.use('/api/platform', createPlatformRouter({ service, tenantUsers, platformAuth, platformDb }));
-  app.use('/api/v1', createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory: service, clerk }));
+  app.use('/api/v1', createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory: service, clerk, memberSync }));
 
   app.use(errorHandler);
 

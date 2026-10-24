@@ -113,8 +113,10 @@ Exit (met in tests with the fake Clerk; run it against your Clerk instance with 
   - Config-driven: tabs from `navigation`, the brand colour, locale formatting and list dropdowns. `contract.ts` mirrors the API; permissions come from `GET /api/v1/me`.
   - Pages: dashboard, vehicles, renters, rentals, calendar, payments, costs and fuel, WhatsApp digest, team and roles.
 - **Tenant users from the admin dashboard.** A **Users** page per tenant, on `/api/platform/tenants/:id/{members,invitations,roles}` (`src/platform/tenantUsers.js`). Super admins invite users with any role, change roles and remove people, with the same rules as the tenant app's Team page.
+- **Tenant deletion from the admin dashboard.** Permanent, for archived or failed-provisioning tenants, after typing the slug. It deletes the Clerk organization, the tenant database, configs, the job and secrets, and keeps the audit history. Removing a user stays "remove from tenant": their Clerk account is kept.
+- **Members without waiting for the webhook.** `loadMember` creates a missing member from their Clerk membership (`members.syncFromClerk`), with the webhook's rules. New members can sign in straight after accepting, even without a webhook tunnel.
 - **Cleanup.** Removed the Vite leftovers, `context/StoreContext.jsx` and `lib/bookings.mjs` (its tests moved to the backend).
-- **Tests.** `test/operations.test.js` covers vehicles, renters, the booking rules (overlaps, back-to-back, concurrent bookings, check-in, return, cancel, overdue), payments, costs and fuel, the dashboard and digest with field filtering, and isolation. `test/tenant-users.test.js` covers the super admin's user management. The tenant app is checked with `typecheck`, `lint` and `build`. 147 backend tests in all.
+- **Tests.** `test/operations.test.js` covers vehicles, renters, the booking rules (overlaps, back-to-back, concurrent bookings, check-in, return, cancel, overdue), payments, costs and fuel, the dashboard and digest with field filtering, and isolation. `test/tenant-users.test.js` and `test/tenant-deletion.test.js` cover the super admin's user management and tenant deletion. The tenant app is checked with `typecheck`, `lint` and `build`. 156 backend tests in all.
 
 Moved to Phase 5, because they need file storage or a scheduler:
 - photos for each inspection point;

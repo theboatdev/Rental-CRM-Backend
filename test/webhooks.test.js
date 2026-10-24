@@ -201,6 +201,38 @@ describe('Clerk webhooks', () => {
     assert.equal(await member('user_y'), null);
   });
 
+  it("creates a member from their Clerk membership when they arrive before the webhook", async () => {
+    clerk.addMembership({ organizationId: ORG, userId: 'user_early', email: 'early@gallefort.example', firstName: 'Eli', lastName: 'Early', roleKey: 'manager' });
+    const before = await usage();
+    const me = await fetch(`${baseUrl}/api/v1/me`, { headers: { 'x-test-user': 'user_early', 'x-test-org': ORG } });
+    assert.equal(me.status, 200);
+    assert.equal((await me.json()).role.key, 'manager');
+    const early = await member('user_early');
+    assert.equal(early.name, 'Eli Early');
+    assert.equal(early.status, 'active');
+    assert.equal(await usage(), before + 1);
+  });
+
+  it("refuses someone Clerk doesn't know, and doesn't ask Clerk again straight away", async () => {
+    const headers = { 'x-test-user': 'user_stranger', 'x-test-org': ORG };
+    const callsBefore = clerk.calls.getMembership;
+    assert.equal((await fetch(`${baseUrl}/api/v1/me`, { headers })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/me`, { headers })).status, 403);
+    assert.equal(clerk.calls.getMembership, callsBefore + 1);
+    assert.equal(await member('user_stranger'), null);
+  });
+
+  it("doesn't bring back a removed member from a membership older than the removal", async () => {
+    const joined = event('organizationMembership.created', membership({ userId: 'user_gone' }));
+    const stale = clock + 500; // between joining and leaving
+    const left = event('organizationMembership.deleted', membership({ userId: 'user_gone' }));
+    await send(joined);
+    await send(left);
+    clerk.addMembership({ organizationId: ORG, userId: 'user_gone', email: 'user_gone@example.com', updatedAt: stale });
+    assert.equal((await fetch(`${baseUrl}/api/v1/me`, { headers: { 'x-test-user': 'user_gone', 'x-test-org': ORG } })).status, 403);
+    assert.equal((await member('user_gone')).status, 'removed');
+  });
+
   it('suspends the tenant when its Clerk organization is deleted', async () => {
     const { body } = await send(event('organization.deleted', { id: ORG, object: 'organization', deleted: true }));
     assert.equal(body.applied, true);

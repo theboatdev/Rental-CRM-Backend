@@ -3,7 +3,7 @@ const { handle } = require('./handle');
 const { requireDatabase } = require('../middleware/database');
 const {
   resolveTenant,
-  loadMember,
+  createLoadMember,
   requirePermission,
   requireAnyPermission,
   hideFinancialFields
@@ -25,9 +25,10 @@ const OPEN_ROUTES = ['/me', '/config'];
  * `requireModule` and `requirePermission`, and reach data only through `req.models`.
  *
  * `directory` finds a tenant by Clerk organization (the platform service);
- * `clerk` is the Clerk gateway, for invitations and memberships.
+ * `clerk` is the Clerk gateway, for invitations and memberships;
+ * `memberSync`, when given, creates a missing member from their Clerk membership.
  */
-function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, clerk, cacheTtlMs }) {
+function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, clerk, memberSync, cacheTtlMs }) {
   const team = createTeam({ clerk, platformDb });
   const roles = createRoles({ clerk });
   const router = express.Router();
@@ -35,7 +36,7 @@ function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, cl
     tenantAuth,
     requireDatabase(platformDb),
     resolveTenant({ directory, getTenantDb, cacheTtlMs }),
-    loadMember,
+    createLoadMember({ syncMember: memberSync && ((req) => memberSync.syncFromClerk({ orgId: req.identity.orgId, userId: req.identity.userId })) }),
     hideFinancialFields
   );
 

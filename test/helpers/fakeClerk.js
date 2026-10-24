@@ -4,7 +4,7 @@
  *
  * - An admin email on the fail.test domain fails its first invitation.
  * - `failOnce(key)` fails the next matching call: `org:<slug>`, `invite:<email>`,
- *   `role:<userId>` or `remove:<userId>`.
+ *   `role:<userId>`, `remove:<userId>` or `delete-org:<orgId>`.
  * - `latencyMs` delays every call, to make concurrent requests overlap.
  */
 const { clerkRoleFor } = require('../../src/platform/clerk');
@@ -21,10 +21,12 @@ function createFakeClerk({ latencyMs = 0 } = {}) {
   const invitations = []; // { id, organizationId, emailAddress, role, publicMetadata, status, createdAt }
   const memberRoles = []; // setMemberRole calls
   const removedMembers = []; // removeMember calls
+  const deletedOrganizations = []; // deleteOrganization calls
   const userOrganizations = new Map(); // userId → [orgId]
+  const memberships = new Map(); // `${orgId}:${userId}` → membership data, as getMembership returns it
   const failNext = new Set();
   const failedInvites = new Set();
-  const calls = { createOrganization: 0, createInvitation: 0 };
+  const calls = { createOrganization: 0, createInvitation: 0, getMembership: 0 };
   let nextInvitation = 1;
   const pause = () => new Promise((resolve) => setTimeout(resolve, latencyMs));
   const failIfAsked = (key, error) => {
@@ -38,9 +40,19 @@ function createFakeClerk({ latencyMs = 0 } = {}) {
     invitations,
     memberRoles,
     removedMembers,
+    deletedOrganizations,
     userOrganizations,
     calls,
     failOnce: (key) => failNext.add(key),
+    /** Makes getMembership find a membership, as Clerk would after an invitation is accepted. */
+    addMembership: ({ organizationId, userId, email, firstName, lastName, role = 'org:member', roleKey, updatedAt = Date.now() }) =>
+      memberships.set(`${organizationId}:${userId}`, {
+        role,
+        public_metadata: roleKey ? { roleKey } : {},
+        organization: { id: organizationId },
+        public_user_data: { user_id: userId, identifier: email, first_name: firstName, last_name: lastName },
+        updated_at: updatedAt
+      }),
 
     // Like the real gateway, finds an earlier attempt's organization by tenantId. The slug only names the fake's ids.
     async ensureOrganization({ tenantId, name, slug }) {
@@ -52,6 +64,13 @@ function createFakeClerk({ latencyMs = 0 } = {}) {
       const organization = { id: orgIdFor(slug), name, slug, publicMetadata: { tenantId } };
       organizations.set(slug, organization);
       return organization.id;
+    },
+
+    async deleteOrganization(organizationId) {
+      await pause();
+      failIfAsked(`delete-org:${organizationId}`, clerkError('Clerk is unavailable (fake)', 503));
+      for (const [slug, organization] of organizations) if (organization.id === organizationId) organizations.delete(slug);
+      deletedOrganizations.push(organizationId);
     },
 
     async ensureOwnerInvitation({ organizationId, emailAddress }) {
@@ -104,6 +123,11 @@ function createFakeClerk({ latencyMs = 0 } = {}) {
       await pause();
       failIfAsked(`remove:${userId}`, clerkError('Clerk is unavailable (fake)', 503));
       removedMembers.push({ organizationId, userId });
+    },
+
+    async getMembership({ organizationId, userId }) {
+      calls.getMembership += 1;
+      return memberships.get(`${organizationId}:${userId}`) ?? null;
     },
 
     async listUserOrganizationIds(userId) {

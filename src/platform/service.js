@@ -12,6 +12,7 @@ const {
 const { zodIssues } = require('./config/path');
 const { conflict, invalid, notFound } = require('./errors');
 const { createProvisioner, newJobSteps } = require('./provisioning');
+const { clerkApiError } = require('./clerk');
 
 /**
  * Platform (control plane) operations behind /api/platform, stored in the
@@ -88,7 +89,7 @@ const isDuplicateKey = (error) => error?.code === 11000;
 class StaleWrite extends Error {}
 
 function createPlatformService({ platformDb, getTenantDb, clerk }) {
-  const { Tenant, TenantConfig, ProvisioningJob, AuditLog } = platformDb.models;
+  const { Tenant, TenantConfig, ProvisioningJob, TenantSecret, AuditLog } = platformDb.models;
   const provisioner = createProvisioner({ platformDb, getTenantDb, clerk });
 
   const record = (entry, session) => AuditLog.create([{ ...entry, at: new Date() }], { session });
@@ -240,6 +241,56 @@ function createPlatformService({ platformDb, getTenantDb, clerk }) {
         throw error;
       }
       return presentTenant(await Tenant.findById(tenant._id).lean());
+    },
+
+    /**
+     * Permanently deletes a tenant: its Clerk organization (with memberships
+     * and invitations), its database, and its configs, provisioning job and
+     * secrets. Only an archived tenant, or one whose provisioning failed, and
+     * only when `confirmSlug` repeats its slug. The platform audit log keeps
+     * the tenant's history. Members' Clerk accounts stay; they just lose this
+     * workspace. Each step can run again, so a deletion that failed half-way
+     * can be retried.
+     */
+    async deleteTenant(tenantId, { confirmSlug } = {}, actor) {
+      const tenant = await requireTenant(tenantId);
+      const job = await ProvisioningJob.findOne({ tenantId: tenant._id }).lean();
+      const provisioningFailed = tenant.status === 'provisioning' && job?.status === 'failed';
+      if (tenant.status !== 'archived' && !provisioningFailed) {
+        throw conflict(
+          tenant.status === 'provisioning'
+            ? `Provisioning is still running for ${tenant.name}`
+            : `Archive ${tenant.name} before deleting it. Only archived tenants, or ones whose provisioning failed, can be deleted.`
+        );
+      }
+      if (confirmSlug !== tenant.slug) {
+        throw invalid(`Type the tenant's slug, ${tenant.slug}, to confirm`, [{ path: 'confirmSlug', message: `Type ${tenant.slug}` }]);
+      }
+
+      if (tenant.clerkOrgId) {
+        try {
+          await clerk.deleteOrganization(tenant.clerkOrgId);
+        } catch (error) {
+          throw clerkApiError(error);
+        }
+      }
+      await getTenantDb(tenant.dbName).dropDatabase();
+      platformDb.removeDb(tenant.dbName);
+      await platformDb.transaction(async (session) => {
+        await Tenant.deleteOne({ _id: tenant._id }, { session });
+        for (const Model of [TenantConfig, ProvisioningJob, TenantSecret]) await Model.deleteMany({ tenantId: tenant._id }, { session });
+        await record(
+          {
+            actor: actorOf(actor),
+            action: 'tenant.deleted',
+            tenantId: tenant._id,
+            tenantName: tenant.name,
+            summary: `Deleted ${tenant.name} (${tenant.slug}): its Clerk organization, database ${tenant.dbName}, configs and secrets`
+          },
+          session
+        );
+      });
+      return { id: String(tenant._id), deleted: true };
     },
 
     /** Newest first, each with its changes from the previous version. */

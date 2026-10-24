@@ -90,15 +90,16 @@ Creating a tenant from the dashboard does real work in Clerk and in MongoDB. It 
 
    If a step fails, the error is on that step. Fix the cause, then use **Retry provisioning** on the tenant page; completed steps don't run again.
 4. Accept the invitation by following the email link and signing up. With `CLERK_INVITATION_REDIRECT_URL` set (step 6), the link opens the tenant app's `/sign-up`; otherwise Clerk's own sign-up page.
-   - With webhooks set up (step 8), the backend adds you to the tenant's `members` as its Owner.
-   - Without webhooks, add yourself with the seed script. `--demo` also adds sample vehicles and renters.
+   - The backend adds you to the tenant's `members` as its Owner: through the webhook (step 8), or, without one, the first time you open the tenant app (it reads your membership from Clerk).
+   - If the link opened Clerk's own page and it said it "cannot redirect to your application", `CLERK_INVITATION_REDIRECT_URL` wasn't set when the invitation was sent. Your account is fine: open `http://localhost:3000` and sign in.
+   - For sample data, run the seed script; `--demo` adds vehicles and renters.
 
      ```sh
      npm run seed -- --tenant shenaly --user user_… --email you+shenaly@gmail.com --name "Your Name" --demo
      ```
 
      `--role staff` (or `manager`, `accountant`) tries another role.
-5. Sign in to the tenant app at `http://localhost:3000`. It opens the tenant's workspace, with the tabs and branding of its config. If it says you're not in this workspace yet, the member record hasn't arrived: check the webhook, or use the seed script above.
+5. Sign in to the tenant app at `http://localhost:3000`. It opens the tenant's workspace, with the tabs and branding of its config.
 
 To add more users, open the tenant in the admin dashboard and go to **Users**: invite by email with a role, change roles, remove people, revoke invitations. The tenant's Owner can do the same from the tenant app's **Team & roles** page.
 
@@ -106,7 +107,7 @@ The seed script writes to the database in `MONGODB_URI`. It's idempotent: runnin
 
 ## 8. Webhooks
 
-Webhooks keep each tenant's `members` in step with Clerk: joins, removals, and name or email changes. See [platform-architecture.md](platform-architecture.md#clerk-webhooks).
+Webhooks keep each tenant's `members` in step with Clerk: joins, removals, and name or email changes. See [platform-architecture.md](platform-architecture.md#clerk-webhooks). Without them, new members still get in (the backend reads their membership from Clerk on first sign-in), but removals made in Clerk directly and name changes aren't picked up, so set them up before going live.
 
 1. Clerk must reach the backend over HTTPS. Locally, run a tunnel such as `ngrok http 5000` or `cloudflared tunnel --url http://localhost:5000`.
 2. In the Clerk dashboard, open **Webhooks → Add Endpoint**:
