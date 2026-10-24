@@ -9,7 +9,7 @@ const {
   CreateTenantInputSchema,
   PROVISIONING_STEPS
 } = require('./tenants/rules');
-const { formatPath } = require('./config/path');
+const { zodIssues } = require('./config/path');
 const { conflict, invalid, notFound } = require('./errors');
 const { createProvisioner, newJobSteps } = require('./provisioning');
 
@@ -21,7 +21,6 @@ const { createProvisioner, newJobSteps } = require('./provisioning');
  * `clerk` is the gateway from `createClerkGateway` (a fake in tests).
  */
 
-const zodIssues = (error) => error.issues.map((issue) => ({ path: formatPath(issue.path), message: issue.message }));
 const iso = (date) => (date ? new Date(date).toISOString() : null);
 const actorOf = (actor) => ({ id: actor.id, name: actor.name });
 

@@ -36,11 +36,12 @@ The first `npm test` downloads a MongoDB binary for `mongodb-memory-server` (cac
 | `src/db/` | `platform.js`: the platform connection. `tenantDb.js`: `getTenantDb(dbName)` and `initTenantDb` |
 | `src/models/` | Mongoose schemas: `platform/` (control plane) and `tenant/` (one DB per tenant). Each file exports a schema |
 | `src/routes/platform.js` | Super admin API under `/api/platform` |
-| `src/routes/tenant.js` | Tenant API under `/api/v1`: `GET /me`, `GET /config` |
+| `src/routes/tenant.js` | Tenant API under `/api/v1`: `/me`, `/config`, members, invitations, roles, audit |
 | `src/routes/webhooks.js` | `POST /webhooks/clerk`: verified Clerk events |
-| `src/middleware/` | `platformAuth.js` (super admin check), `tenantAuth.js` (Clerk session with an organization), `tenantContext.js` (`resolveTenant`, `loadMember`, `requireModule`, `requirePermission`), `database.js` (503 without a database), `errorHandler.js` |
+| `src/middleware/` | `platformAuth.js` (super admin check), `tenantAuth.js` (Clerk session with an organization), `tenantContext.js` (`resolveTenant`, `loadMember`, `requireModule`, `requirePermission`, `hideFinancialFields`), `database.js` (503 without a database), `errorHandler.js` |
+| `src/tenant/` | Tenant API logic: `team.js` (members, invitations, role changes), `roles.js` (custom roles), `access.js` (Owner and escalation rules), `audit.js` |
 | `src/platform/` | The rules (config schema, modules, templates, diff; RBAC; tenant rules) and the platform: `service.js` (tenants, configs, audit), `provisioning.js` (the job runner), `clerk.js` (every Clerk API call), `members.js` (member sync from webhooks) |
-| `test/` | Rule tests, HTTP tests for the platform API, provisioning, webhooks and tenancy, on an in-memory MongoDB. `test/helpers/` has the DB setup, a fake Clerk gateway and the demo tenants |
+| `test/` | Rule tests, HTTP tests for the platform API, provisioning, webhooks, tenancy and team management, on an in-memory MongoDB. `test/helpers/` has the DB setup, a fake Clerk gateway and the demo tenants |
 | `scripts/seed-tenant.js` | `npm run seed`: tenant DB indexes and roles, you as a member, optional demo data |
 
 ## Docs

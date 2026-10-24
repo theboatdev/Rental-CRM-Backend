@@ -69,9 +69,12 @@ describe('provisioning', () => {
     assert.equal(tenant.clerkOrgId, organization.id);
     assert.deepEqual(organization.publicMetadata, { tenantId: tenant.id });
     assert.equal(organization.name, 'Shenaly Rent a Car');
-    assert.deepEqual(clerk.invitations.filter((i) => i.organizationId === organization.id), [
-      { organizationId: organization.id, emailAddress: 'admin@shenalyrentacar.com', role: 'org:admin', publicMetadata: { roleKey: 'owner' } }
-    ]);
+    assert.deepEqual(
+      clerk.invitations
+        .filter((i) => i.organizationId === organization.id)
+        .map(({ emailAddress, role, publicMetadata, status }) => ({ emailAddress, role, publicMetadata, status })),
+      [{ emailAddress: 'admin@shenalyrentacar.com', role: 'org:admin', publicMetadata: { roleKey: 'owner' }, status: 'pending' }]
+    );
 
     // Tenant database with system roles and indexes.
     const tenantDb = db.getTenantDb(tenant.dbName);

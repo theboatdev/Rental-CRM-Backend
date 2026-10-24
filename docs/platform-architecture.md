@@ -208,12 +208,24 @@ Errors use one shape: `{ "error": { "code", "message", "issues"? } }`. Codes are
 
 ## Tenant API
 
-Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) chain. Feature routes arrive with Phases 3 and 4.
+Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) chain. Every route except `/me` and `/config` requires a permission. Operations feature routes arrive with Phase 4.
 
-| Method and path | Purpose |
-|---|---|
-| `GET /me` | `{ user, tenant, role, permissions, configVersion }`: who the caller is in this tenant and their effective permissions |
-| `GET /config` | `{ version, config }`: the active config. It has an ETag and `Cache-Control: private, no-cache`, so revalidation returns 304 |
+| Method and path | Permission | Purpose |
+|---|---|---|
+| `GET /me` | — | `{ user, tenant, role, permissions, configVersion }`: who the caller is in this tenant and their effective permissions |
+| `GET /config` | — | `{ version, config }`: the active config. It has an ETag and `Cache-Control: private, no-cache`, so revalidation returns 304 |
+| `GET /members?status=active\|removed\|all` | `team:read` | The team, oldest first |
+| `PATCH /members/:id` | `team:manage` | Change a member's role (`{ roleKey }`) |
+| `DELETE /members/:id` | `team:manage` | Remove a member from the tenant and its Clerk organization |
+| `GET /invitations` | `team:read` | Pending invitations (from Clerk) |
+| `POST /invitations` | `team:manage` | Invite `{ email, roleKey }`; 409 when the email is taken or `maxUsers` is reached |
+| `DELETE /invitations/:id` | `team:manage` | Revoke a pending invitation |
+| `GET /roles` | `team:read` or `roles:manage` | System and custom roles, with active member counts |
+| `GET /permissions` | `team:read` or `roles:manage` | The permission catalog, with `available: false` for disabled modules |
+| `POST /roles` · `PATCH /roles/:key` · `DELETE /roles/:key` | `roles:manage` | Custom roles. System roles are read-only |
+| `GET /audit?limit&entityType` | `audit:read` | The tenant's audit log, newest first |
+
+Clerk failures during these calls return 422 with Clerk's message when Clerk rejected the input, and 502 `clerk_unavailable` otherwise.
 
 ## Repositories
 

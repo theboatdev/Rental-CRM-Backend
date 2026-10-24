@@ -1,4 +1,5 @@
 const { OWNER_ROLE_KEY } = require('./rbac/permissions');
+const { refreshMemberUsage } = require('./usage');
 
 /** Who the platform audit log credits for changes that come from Clerk webhooks. */
 const CLERK_ACTOR = { id: 'clerk', name: 'Clerk webhook' };
@@ -26,10 +27,7 @@ function createMemberSync({ platformDb, getTenantDb, clerk }) {
     return tenant && { tenant, models: getTenantDb(tenant.dbName).models };
   }
 
-  async function recountMembers(tenant, Member) {
-    const members = await Member.countDocuments({ status: 'active' });
-    await Tenant.updateOne({ _id: tenant._id }, { $set: { 'usage.members': members } });
-  }
+  const recountMembers = (tenant, Member) => refreshMemberUsage({ Tenant, tenantId: tenant._id, Member });
 
   /**
    * Applies `update` unless the member's `field` records a newer event. When

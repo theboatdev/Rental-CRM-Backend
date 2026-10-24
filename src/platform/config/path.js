@@ -7,4 +7,7 @@ function formatPath(segments) {
   }, '');
 }
 
-module.exports = { formatPath };
+/** A Zod error's issues in the API's `{ path, message }` shape. */
+const zodIssues = (error) => error.issues.map((issue) => ({ path: formatPath(issue.path), message: issue.message }));
+
+module.exports = { formatPath, zodIssues };

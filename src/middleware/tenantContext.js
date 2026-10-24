@@ -1,6 +1,7 @@
 const { MODULE_KEYS } = require('../platform/config/modules');
 const { effectivePermissions, isPermission } = require('../platform/rbac/permissions');
 const { forbidden, notFound } = require('../platform/errors');
+const { stripFinancialFields } = require('../platform/rbac/financialFields');
 
 /** Runs an async middleware body and hands a rejection to the error handler. */
 const asyncMiddleware = (fn) => (req, res, next) =>
@@ -66,11 +67,37 @@ function requireModule(moduleKey) {
   return (req, res, next) => (req.config.modules[moduleKey].enabled ? next() : next(notFound('Not found')));
 }
 
-/** 403 unless the caller's effective permissions include `permission`. Mount it after `requireModule`. */
-function requirePermission(permission) {
-  if (!isPermission(permission)) throw new Error(`Unknown permission: ${permission}`);
-  return (req, res, next) =>
-    req.permissions.has(permission) ? next() : next(forbidden(`You don't have the ${permission} permission`));
+/**
+ * 403 unless the caller's effective permissions include at least one of
+ * `permissions`. The middleware is marked with the permissions it checks, so
+ * a test can assert that every tenant route has one.
+ */
+function requireAnyPermission(...permissions) {
+  for (const permission of permissions) {
+    if (!isPermission(permission)) throw new Error(`Unknown permission: ${permission}`);
+  }
+  const middleware = (req, res, next) =>
+    permissions.some((permission) => req.permissions.has(permission))
+      ? next()
+      : next(forbidden(`You don't have the ${permissions.join(' or ')} permission`));
+  middleware.requiredPermissions = permissions;
+  return middleware;
 }
 
-module.exports = { resolveTenant, loadMember, requireModule, requirePermission };
+/** 403 unless the caller's effective permissions include `permission`. Mount it after `requireModule`. */
+const requirePermission = (permission) => requireAnyPermission(permission);
+
+/**
+ * Drops profit and margin fields (FINANCIAL_FIELDS) from every response
+ * unless the caller has financials:view, so they can't be read from the
+ * network tab. Handlers return those fields under the listed names and
+ * don't filter them themselves.
+ */
+function hideFinancialFields(req, res, next) {
+  if (req.permissions.has('financials:view')) return next();
+  const json = res.json.bind(res);
+  res.json = (body) => json(stripFinancialFields(body));
+  next();
+}
+
+module.exports = { resolveTenant, loadMember, requireModule, requirePermission, requireAnyPermission, hideFinancialFields };

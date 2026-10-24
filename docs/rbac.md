@@ -67,25 +67,38 @@ A tenant must always have at least one active Owner. The API refuses to remove o
 
 ## Custom roles
 
-Tenant admins (`roles:manage`) create roles in the tenant app's settings:
+Tenant admins (`roles:manage`) create roles in the tenant app's settings, through `POST /api/v1/roles`:
 
-- Pick a key (`front_desk`), a name and permissions.
-- The picker only offers permissions whose module is enabled (`availablePermissions(config)`).
-- Input is validated with `CustomRoleInputSchema`, which rejects unknown permissions and deduplicates.
+- Pick a key (`front_desk`), a name and permissions. The key can't change afterwards.
+- The picker offers the catalog from `GET /api/v1/permissions`, where permissions of disabled modules are `available: false`. A role may still hold them; they take effect when the module is enabled.
+- Input is validated with `CustomRoleInputSchema` (create) and `CustomRoleUpdateSchema` (edit), which reject unknown permissions and deduplicate.
+- System roles can't be edited or deleted. A custom role can't be deleted while an active member or a pending invitation uses it.
 
 ## Team invites
 
-1. A tenant admin (`team:manage`) invites an email address and picks a role.
-2. The backend checks `limits.maxUsers`, then calls Clerk `createOrganizationInvitation` with `publicMetadata.roleKey`. The Clerk role is `org:admin` for Owner and `org:member` otherwise.
+1. A tenant admin (`team:manage`) invites an email address and picks a role (`POST /api/v1/invitations`).
+2. The backend checks `limits.maxUsers` against active members plus pending invitations. It then calls Clerk `createOrganizationInvitation` with `publicMetadata.roleKey`. The Clerk role is `org:admin` for Owner and `org:member` otherwise.
 3. When the invite is accepted, the `organizationMembership.created` webhook creates the `members` document with that `roleKey`.
-4. Role changes update `members.roleKey`. Promoting someone to Owner also updates their Clerk org role.
-5. Removing a member deletes the Clerk membership; the webhook marks the member `removed`. Audit history keeps their name.
+4. Role changes (`PATCH /api/v1/members/:id`) update `members.roleKey`. Moving someone into or out of Owner also updates their Clerk org role. If Clerk fails, the change is undone.
+5. Removing a member (`DELETE /api/v1/members/:id`) marks them `removed` and deletes the Clerk membership; the webhook confirms it. Audit history keeps their name.
+
+Team and role changes are recorded in the tenant's `audit_logs`, readable with `audit:read` (`GET /api/v1/audit`).
 
 ## Enforcement
 
-- **API (source of truth).** `requirePermission('payments:void')` on every route, after `loadMember` computes effective permissions. Disabled modules return 404 through `requireModule` before permissions are checked.
+- **API (source of truth).** `requirePermission('payments:void')` on every route, after `loadMember` computes effective permissions.
+  - Disabled modules return 404 through `requireModule` before permissions are checked.
+  - Only `/me` and `/config` are open to every member (`OPEN_ROUTES` in `src/routes/tenant.js`). `test/team.test.js` fails if any other route lacks a permission check.
+- **Last Owner.** A tenant must always have at least one active Owner. Demoting or removing the last one returns 409.
+  - These changes run in a transaction that bumps a lock document first, so two Owners demoting each other at once can't both succeed.
+- **No escalation.** These rules only ever stop non-Owners, such as a custom "front desk" role given `team:manage` (`src/tenant/access.js`):
+  - Only an Owner can make someone an Owner, or change or remove an Owner.
+  - Nobody can invite with, assign, or define a role holding permissions they don't have.
+  - Nobody can change or remove a member, or edit a role, whose permissions go beyond their own.
 - **Tenant app (UX only).** `GET /api/v1/me` returns `{ user, tenant, role, permissions, configVersion }`; the config itself comes from `GET /api/v1/config`. `<Can permission="financials:view">` and `useCan()` hide what the user can't use. Hiding UI is never the protection.
 - **Field-level rule.** Responses drop profit and margin fields unless the caller has `financials:view`, so a Staff user can't read them from the network tab.
+  - `hideFinancialFields` strips them from every tenant response, at any depth. The field names are listed in `src/platform/rbac/financialFields.js`: `revenue`, `totalRevenue`, `operatingCosts`, `profit`, `grossProfit`, `netProfit`, `margin`, `profitMargin`, `roi`.
+  - Handlers that return such figures must use those names. Raw amounts a role works with, like a rental total or a cost entry, aren't filtered.
 
 ## Super admins are separate
 

@@ -123,16 +123,24 @@ const SYSTEM_ROLES = [
   }
 ];
 
-/** Shape the API accepts when a tenant admin creates or edits a custom role. */
-const CustomRoleInputSchema = z.strictObject({
-  key: z.string().regex(ROLE_KEY_PATTERN, { error: 'Use lowercase letters, digits and underscores, e.g. front_desk' }),
+const roleFields = {
   name: z.string().trim().min(2).max(40),
-  description: z.string().trim().max(200).default(''),
+  description: z.string().trim().max(200),
   permissions: z
     .array(z.string().refine(isPermission, { error: 'Unknown permission' }))
     .min(1)
     .transform((values) => [...new Set(values)])
+};
+
+/** Shape the API accepts when a tenant admin creates a custom role. */
+const CustomRoleInputSchema = z.strictObject({
+  key: z.string().regex(ROLE_KEY_PATTERN, { error: 'Use lowercase letters, digits and underscores, e.g. front_desk' }),
+  ...roleFields,
+  description: roleFields.description.default('')
 });
+
+/** Shape the API accepts when a tenant admin edits a custom role: any of the fields, never the key. */
+const CustomRoleUpdateSchema = z.strictObject(roleFields).partial();
 
 function isPermissionActive(permission, config) {
   const module = PERMISSIONS[permission].module;
@@ -159,6 +167,7 @@ module.exports = {
   ROLE_KEY_PATTERN,
   SYSTEM_ROLES,
   CustomRoleInputSchema,
+  CustomRoleUpdateSchema,
   isPermission,
   effectivePermissions,
   availablePermissions

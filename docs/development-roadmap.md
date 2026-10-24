@@ -74,11 +74,24 @@ Exit (met, see `test/tenancy.test.js`): a request with an org A token can't read
 
 Exit (met in tests with the fake Clerk; run it against your Clerk instance with [clerk-setup.md](clerk-setup.md#7-create-a-tenant-and-call-its-api)): creating Shenaly from the dashboard produces a Clerk org, a `tenant_<id>` DB with roles, config v1 and an invitation email.
 
-## Phase 3: Tenant RBAC
+## Phase 3: Tenant RBAC ✅
 
-- Roles and members APIs: list, invite, change role, remove. Custom role CRUD, validated with `CustomRoleInputSchema`.
-- `requirePermission` on every tenant route. `maxUsers` enforced when inviting. Last-Owner protection.
-- Field-level filtering: no profit or margin fields without `financials:view`.
+- **Team API** (`src/tenant/team.js`):
+  - Members: list, change role, remove.
+  - Invitations: list, invite, revoke. They live in Clerk; the API reads and writes them through the gateway.
+  - Changes write the tenant DB first and undo that write if Clerk fails (502 `clerk_unavailable`), so the two don't drift apart.
+- **Roles API** (`src/tenant/roles.js`):
+  - Custom role CRUD, validated with `CustomRoleInputSchema` and `CustomRoleUpdateSchema`. System roles are read-only.
+  - A role can't be deleted while a member or a pending invitation uses it.
+  - `GET /permissions` serves the catalog with `available` per module.
+- **Rules** (see [rbac.md](rbac.md#enforcement)):
+  - `requirePermission` on every tenant route except `/me` and `/config`; `test/team.test.js` fails if a route lacks one.
+  - `maxUsers` counts active members plus pending invitations.
+  - Last-Owner protection runs under a per-tenant lock, so concurrent demotions can't remove every Owner.
+  - Nobody can hand out the Owner role, or permissions they don't hold, which stops escalation through custom roles.
+- **Field-level filtering.** `hideFinancialFields` drops the fields in `src/platform/rbac/financialFields.js` (profit, margin, revenue, ROI) from every tenant response unless the caller has `financials:view`.
+- **Tenant audit log.** Team and role changes are recorded; `GET /api/v1/audit` lists them (`audit:read`).
+- **Tests.** `test/team.test.js`: the route guard, injection payloads, invitations and `maxUsers`, role changes and the Owner race, Clerk failures, escalation, role CRUD, field filtering and the audit log. 115 tests in all.
 
 ## Phase 4: Tenant app migration
 
