@@ -14,7 +14,8 @@ const RENTAL_STATUSES = ['RESERVED', 'ACTIVE', 'COMPLETED', 'CANCELLED'];
 /** How a renter or booking arrived: at the counter, or through the guest portal. */
 const SOURCES = ['COUNTER', 'ONLINE'];
 
-const PAYMENT_TYPES = ['ADVANCE', 'RENTAL', 'DEPOSIT', 'DEPOSIT_REFUND', 'DAMAGE', 'LATE_FEE'];
+/** Money in, except REFUND: money paid back to the renter (a deposit, or the advance of a cancelled booking). */
+const PAYMENT_TYPES = ['ADVANCE', 'RENTAL', 'DEPOSIT', 'DAMAGE', 'LATE_FEE', 'REFUND'];
 
 const MEMBER_STATUSES = ['active', 'removed'];
 

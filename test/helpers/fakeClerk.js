@@ -42,14 +42,12 @@ function createFakeClerk({ latencyMs = 0 } = {}) {
     calls,
     failOnce: (key) => failNext.add(key),
 
+    // Like the real gateway, finds an earlier attempt's organization by tenantId. The slug only names the fake's ids.
     async ensureOrganization({ tenantId, name, slug }) {
       await pause();
       failIfAsked(`org:${slug}`, clerkError('Clerk is unavailable (fake)', 503));
-      const existing = organizations.get(slug);
-      if (existing) {
-        if (existing.publicMetadata.tenantId !== tenantId) throw new Error(`The Clerk organization slug "${slug}" is already used by another organization`);
-        return existing.id;
-      }
+      const existing = [...organizations.values()].find((organization) => organization.publicMetadata.tenantId === tenantId);
+      if (existing) return existing.id;
       calls.createOrganization += 1;
       const organization = { id: orgIdFor(slug), name, slug, publicMetadata: { tenantId } };
       organizations.set(slug, organization);

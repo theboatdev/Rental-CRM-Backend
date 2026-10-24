@@ -44,21 +44,17 @@ function createClerkGateway({ secretKey, invitationRedirectUrl }) {
   const gateway = {
     /**
      * The tenant's organization, created on the first call. A retry finds the
-     * one an earlier attempt created by its slug and `publicMetadata.tenantId`.
+     * one an earlier attempt created by its `publicMetadata.tenantId`.
+     *
+     * No slug is sent: the tenant's slug lives in the platform DB, and Clerk
+     * instances can have organization slugs turned off. No createdBy either,
+     * so the super admin doesn't become a member.
      */
-    async ensureOrganization({ tenantId, name, slug }) {
-      const existing = await clerk.organizations.getOrganization({ slug }).catch((error) => {
-        if (isNotFound(error)) return null;
-        throw error;
-      });
-      if (existing) {
-        if (existing.publicMetadata?.tenantId !== tenantId) {
-          throw new Error(`The Clerk organization slug "${slug}" is already used by another organization`);
-        }
-        return existing.id;
-      }
-      // No createdBy, so the super admin doesn't become a member.
-      const organization = await clerk.organizations.createOrganization({ name, slug, publicMetadata: { tenantId } });
+    async ensureOrganization({ tenantId, name }) {
+      const { data } = await clerk.organizations.getOrganizationList({ query: name, limit: 100 });
+      const existing = data.find((organization) => organization.publicMetadata?.tenantId === tenantId);
+      if (existing) return existing.id;
+      const organization = await clerk.organizations.createOrganization({ name, publicMetadata: { tenantId } });
       return organization.id;
     },
 

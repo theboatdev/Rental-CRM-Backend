@@ -17,6 +17,7 @@ const inspectionSchema = new Schema(
 const rentalSchema = new Schema(
   {
     code: { type: String, required: true }, // RNT-2026-0042, or BK-… while reserved; prefixes from rules.codePrefixes
+    bookingCode: { type: String }, // the BK-… code a checked-in reservation had
     renter: { type: Schema.Types.ObjectId, ref: 'Renter', required: true },
     vehicle: { type: Schema.Types.ObjectId, ref: 'Vehicle', required: true },
     status: { type: String, enum: RENTAL_STATUSES, default: 'RESERVED' },

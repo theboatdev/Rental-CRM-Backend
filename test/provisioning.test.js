@@ -166,11 +166,16 @@ describe('provisioning', () => {
     assert.equal((await call('POST', `/tenants/${tenant.id}/provisioning/retry`)).body.status, 'succeeded');
   });
 
-  it("fails clearly when another tenant's Clerk organization has the slug", async () => {
-    clerk.organizations.set('taken', { id: 'org_taken', name: 'Someone else', slug: 'taken', publicMetadata: { tenantId: 'another' } });
-    const { job } = (await create('taken')).body;
-    assert.equal(stepStatuses(job).create_clerk_org, 'failed');
-    assert.match(job.steps[1].error, /already used by another organization/);
+  it('reuses the Clerk org an earlier attempt created instead of making a second one', async () => {
+    const { tenant } = (await create('half-done', { adminEmail: 'o@half-done.fail.test' })).body;
+    const organizationsBefore = clerk.organizations.size;
+    // As if the org was created but the step's result never got saved.
+    await db.platformDb.models.Tenant.updateOne({ _id: tenant.id }, { $unset: { clerkOrgId: 1 } });
+    await db.platformDb.models.ProvisioningJob.updateOne({ tenantId: tenant.id }, { $set: { 'steps.1.status': 'pending' } });
+
+    assert.equal((await call('POST', `/tenants/${tenant.id}/provisioning/retry`)).body.status, 'succeeded');
+    assert.equal(clerk.organizations.size, organizationsBefore);
+    assert.equal((await call('GET', `/tenants/${tenant.id}`)).body.clerkOrgId, orgIdFor('half-done'));
   });
 
   it('lets only one of two concurrent creates take a slug', async () => {

@@ -28,7 +28,7 @@ The backend owns the schema and does all validation:
 How each app uses it:
 
 - **Backend:** loads the active version into `req.config` for every tenant request, which drives `requireModule`, permission filtering, list validation and limits.
-- **Tenant app (Phase 4):** fetches it once at boot from `GET /api/v1/config` (with an ETag). It drives the tabs, CSS branding variables, `Intl` currency and date formatting, and dropdowns.
+- **Tenant app:** fetches it once at sign-in from `GET /api/v1/config` (with an ETag). It drives the tabs, CSS branding variables, `Intl` currency and date formatting, and dropdowns.
 
 ## Sections
 

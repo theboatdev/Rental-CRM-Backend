@@ -5,6 +5,7 @@ const { createTenantRouter } = require('./routes/tenant');
 const { createWebhookRouter } = require('./routes/webhooks');
 const { createPlatformService } = require('./platform/service');
 const { createMemberSync } = require('./platform/members');
+const { createTenantUsers } = require('./platform/tenantUsers');
 const { createTenantDbGetter } = require('./db/tenantDb');
 const { errorHandler } = require('./middleware/errorHandler');
 const { createTenantAuth } = require('./middleware/tenantAuth');
@@ -23,6 +24,7 @@ function createApp({ platformAuth, tenantAuth = createTenantAuth({}), platformDb
   const getTenantDb = platformDb && createTenantDbGetter(platformDb);
   const service = platformDb && createPlatformService({ platformDb, getTenantDb, clerk });
   const memberSync = platformDb && createMemberSync({ platformDb, getTenantDb, clerk });
+  const tenantUsers = platformDb && createTenantUsers({ platformDb, getTenantDb, clerk });
 
   const app = express();
 
@@ -42,7 +44,7 @@ function createApp({ platformAuth, tenantAuth = createTenantAuth({}), platformDb
     });
   });
 
-  app.use('/api/platform', createPlatformRouter({ service, platformAuth, platformDb }));
+  app.use('/api/platform', createPlatformRouter({ service, tenantUsers, platformAuth, platformDb }));
   app.use('/api/v1', createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory: service, clerk }));
 
   app.use(errorHandler);

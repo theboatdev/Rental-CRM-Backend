@@ -12,10 +12,13 @@ Create an application and choose the sign-in methods you want (email + password 
 - **Turn off personal accounts.** Tenant users must belong to an organization; there is no personal workspace.
 - **Keep the default roles** `org:admin` and `org:member`. Don't add custom roles or permissions in Clerk; tenant RBAC lives in the tenant database ([rbac.md](rbac.md)).
 - **Turn off organization creation by users.** Only the platform creates organizations, during provisioning.
+- **Organization slugs** can stay off. The platform keeps each tenant's slug in its own database and never sends one to Clerk.
 
 ## 3. Restrict sign-up
 
 Set the sign-up mode to **Restricted**, so only invited people can create accounts. Tenant admins and their teams arrive through organization invitations; super admins are added by hand.
+
+For invitees to set a password, turn on **Email address** and **Password** under **User & authentication**. With only Google enabled, they can accept an invitation only with a Google account for the invited email.
 
 ## 4. Customize the session token
 
@@ -46,19 +49,26 @@ Under **Users**, open your user, and in **Metadata → Public** set:
 
 Sign out and back in (or wait for the session token to refresh, about a minute) so the new claim shows up. Public metadata can only be changed from the dashboard or the Backend API, so users can't promote themselves.
 
-## 6. Configure the backend and the admin dashboard
+## 6. Configure the backend and the apps
 
-Both need the keys. The admin dashboard calls the backend with your session token, and the backend checks it.
+All three need the keys. Both apps call the backend with the user's session token, and the backend checks it.
 
 ```sh
 # backend repo
-cp .env.example .env         # set CLERK_SECRET_KEY, CLERK_PUBLISHABLE_KEY, CLERK_AUTHORIZED_PARTIES
+cp .env.example .env         # set CLERK_SECRET_KEY, CLERK_PUBLISHABLE_KEY, CLERK_AUTHORIZED_PARTIES,
+                             # and CLERK_INVITATION_REDIRECT_URL=http://localhost:3000/sign-up
 npm run dev                  # http://localhost:5000
 
 # adminDashboard repo
 cp .env.example .env.local   # set NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY, CLERK_SECRET_KEY, PLATFORM_API_URL
 npm run dev                  # http://localhost:3001
+
+# frontend repo (the tenant app)
+cp .env.example .env.local   # set NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY, CLERK_SECRET_KEY, NEXT_PUBLIC_API_URL
+npm run dev                  # http://localhost:3000
 ```
+
+`CLERK_AUTHORIZED_PARTIES` must list both app origins: `http://localhost:3000,http://localhost:3001`.
 
 To check the setup:
 
@@ -79,7 +89,7 @@ Creating a tenant from the dashboard does real work in Clerk and in MongoDB. It 
 3. The result page lists the provisioning steps. In the Clerk dashboard, **Organizations** now shows the organization, and the admin email receives the invitation.
 
    If a step fails, the error is on that step. Fix the cause, then use **Retry provisioning** on the tenant page; completed steps don't run again.
-4. Accept the invitation by following the email link and signing up.
+4. Accept the invitation by following the email link and signing up. With `CLERK_INVITATION_REDIRECT_URL` set (step 6), the link opens the tenant app's `/sign-up`; otherwise Clerk's own sign-up page.
    - With webhooks set up (step 8), the backend adds you to the tenant's `members` as its Owner.
    - Without webhooks, add yourself with the seed script. `--demo` also adds sample vehicles and renters.
 
@@ -88,7 +98,9 @@ Creating a tenant from the dashboard does real work in Clerk and in MongoDB. It 
      ```
 
      `--role staff` (or `manager`, `accountant`) tries another role.
-5. Call `GET /api/v1/me` with a session token whose active organization is the tenant's. The tenant app does this from Phase 4. Until then, get a token with `getToken()` after `setActive({ organization })`.
+5. Sign in to the tenant app at `http://localhost:3000`. It opens the tenant's workspace, with the tabs and branding of its config. If it says you're not in this workspace yet, the member record hasn't arrived: check the webhook, or use the seed script above.
+
+To add more users, open the tenant in the admin dashboard and go to **Users**: invite by email with a role, change roles, remove people, revoke invitations. The tenant's Owner can do the same from the tenant app's **Team & roles** page.
 
 The seed script writes to the database in `MONGODB_URI`. It's idempotent: running it again updates your member record and skips demo data the tenant already has.
 
@@ -110,5 +122,4 @@ Without the secret, `/webhooks/clerk` responds 503 and Clerk keeps retrying for 
 
 ## Later phases
 
-- **Phase 4, tenant app.** Add `@clerk/nextjs` to `frontend/` with the same keys. Signed-in users without an active organization are asked to choose one, since personal accounts are off.
 - **Production.** Create the production instance on the root domain (e.g. `example.com`), with the tenant app on `app.example.com` and the admin dashboard on `admin.example.com`. One production instance covers subdomains of the same root domain.

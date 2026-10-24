@@ -6,10 +6,11 @@ const { forbidden } = require('../platform/errors');
  * Owner can give or take away the Owner role, and nobody can hand out (or act
  * on a member with) permissions they don't hold themselves. An Owner holds
  * every permission, so these only ever stop non-Owners with team:manage or
- * roles:manage in a custom role.
+ * roles:manage in a custom role. A super admin managing a tenant's users from
+ * the admin dashboard (`ctx.platformAdmin`) counts as an Owner.
  */
 
-const isOwner = (ctx) => ctx.role.key === OWNER_ROLE_KEY;
+const isOwner = (ctx) => ctx.platformAdmin === true || ctx.role.key === OWNER_ROLE_KEY;
 
 /** Permissions in `permissions` that the caller doesn't hold. */
 function beyondCaller(ctx, permissions = []) {

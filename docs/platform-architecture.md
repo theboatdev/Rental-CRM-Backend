@@ -22,7 +22,7 @@ Related docs: [tenant-config.md](tenant-config.md) · [rbac.md](rbac.md) · [cle
 | Authorization | Roles and permissions live **in the tenant DB**, not in Clerk | Clerk's custom roles are instance-wide; tenant admins need their own roles |
 | Tenant resolution | Single domain; tenant comes from the user's **active Clerk organization** (`orgId` in the session token). Public pages use the slug: `/book/<slug>` | No wildcard DNS needed now; subdomains or custom domains can be added later |
 | Feature/UI control | A **versioned JSON config per tenant** in the platform DB, validated by a shared Zod schema | Super admins change features, branding and rules without a deploy |
-| Languages | Next.js + TypeScript for `adminDashboard` (and `frontend` from Phase 4); **JavaScript (CommonJS) for `backend`** | Team preference |
+| Languages | Next.js + TypeScript for `adminDashboard` and `frontend`; **JavaScript (CommonJS) for `backend`** | Team preference |
 | Repos | **Three separate repositories**: `backend`, `frontend`, `adminDashboard`. No shared package | Each app is installed, versioned and deployed on its own; the backend's API is the contract between them |
 | Shared rules | The **backend owns** the config schema, templates, permission catalog and tenant rules, and serves them over `/api/platform` | One source of truth without a shared package; the frontends validate by asking the backend |
 
@@ -75,7 +75,7 @@ The frontends don't import any of this. The admin dashboard:
 - validates every edit and uploaded file through `POST /api/platform/tenants/:id/config/validate`;
 - keeps TypeScript types for the responses in `src/lib/contract.ts`.
 
-The tenant app follows the same pattern from Phase 4.
+The tenant app follows the same pattern for the tenant API: types in its `src/lib/contract.ts`, config from `GET /api/v1/config`, permissions from `GET /api/v1/me`.
 
 ## Data
 
@@ -95,7 +95,7 @@ The six existing domain models (`Vehicle`, `Renter`, `Rental`, `Payment`, `Vehic
 
 - `members`: `{ clerkUserId, email, name, roleKey, status }`. Clerk owns credentials, so there is no password hash.
 - `roles`: system roles seeded at provisioning, plus custom roles.
-- `fuel_logs`: exists in the frontend demo but has no backend model yet.
+- `fuel_logs`: fuel fill-ups per vehicle.
 - `counters`: atomic `$inc` for human-readable codes (`RNT-2026-0042`, `SR-0146`, `RCPT-2026-0091`), using the prefixes from the config.
 - `audit_logs` and `_migrations`.
 
@@ -144,7 +144,7 @@ Super admins are not members of tenant organizations. Support access ("view as t
 `POST /api/platform/tenants` runs the job (`src/platform/provisioning.js`) before it responds. Each step is idempotent and recorded in `provisioning_jobs`, so **Retry** resumes from the failed step:
 
 1. **Create tenant record**: status `provisioning`, `dbName = tenant_<tenantId>`. The DB name uses the immutable id, not the renamable slug. It's written in one transaction with the job and the audit entry.
-2. **Create Clerk organization**: same name and slug, `publicMetadata.tenantId`. No `createdBy`, so the super admin doesn't become a member. A retry finds an organization an earlier attempt created by its slug. If an organization with that slug belongs to something else, the step fails and says so.
+2. **Create Clerk organization**: same name, `publicMetadata.tenantId`. No slug, since the tenant's slug lives in the platform DB and Clerk instances can have organization slugs turned off. No `createdBy`, so the super admin doesn't become a member. A retry finds an organization an earlier attempt created by its `publicMetadata.tenantId`.
 3. **Initialise tenant DB**: `initTenantDb` (`src/db/tenantDb.js`) syncs the indexes of all tenant models and seeds the system roles. Counters are created on first use.
 4. **Write config v1**: `createConfigFromTemplate(template, { branding, limits })`, upserted as version 1.
 5. **Invite tenant admin**: Clerk organization invitation with role `org:admin` and `publicMetadata.roleKey = "owner"`. It's skipped when the admin already has a pending invitation or membership. `CLERK_INVITATION_REDIRECT_URL`, if set, is where the invitation link lands.
@@ -203,12 +203,17 @@ The super admin API, under `/api/platform`. Every route requires a Clerk session
 | `POST /tenants/:id/config` | Publish (`{ config or configText, note, baseVersion }`); 409 if `baseVersion` is stale |
 | `POST /tenants/:id/config/versions/:version/restore` | Republish an old version as the newest |
 | `GET /audit?tenantId&limit` | Audit log, newest first |
+| `GET /tenants/:id/members` · `GET /tenants/:id/roles` | The tenant's users and its roles |
+| `GET /tenants/:id/invitations` · `POST /tenants/:id/invitations` · `DELETE …/invitations/:invitationId` | Pending invitations · invite `{ email, roleKey }` · revoke |
+| `PATCH /tenants/:id/members/:memberId` · `DELETE /tenants/:id/members/:memberId` | Change a user's role · remove them |
+
+The user routes (`src/platform/tenantUsers.js`) run the tenant's team rules (`src/tenant/team.js`): `maxUsers` counting pending invitations, at least one Owner, Clerk kept in step. The super admin acts as an Owner, so they can make or remove Owners. Changes need an active tenant and are recorded in both the platform's and the tenant's audit log.
 
 Errors use one shape: `{ "error": { "code", "message", "issues"? } }`. Codes are `unauthenticated` (401), `forbidden` (403), `not_found` (404), `conflict` (409), `invalid` (422, with field `issues`) and `auth_not_configured` (503). Without a database, routes respond `database_not_configured` or `database_unavailable` (503). The webhook adds `invalid_signature` (400) and `webhooks_not_configured` (503).
 
 ## Tenant API
 
-Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) chain. Every route except `/me` and `/config` requires a permission. Operations feature routes arrive with Phase 4.
+Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) chain. Every route except `/me` and `/config` requires a permission; operations routes also require their module (404 when it's off).
 
 | Method and path | Permission | Purpose |
 |---|---|---|
@@ -224,6 +229,21 @@ Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) c
 | `GET /permissions` | `team:read` or `roles:manage` | The permission catalog, with `available: false` for disabled modules |
 | `POST /roles` · `PATCH /roles/:key` · `DELETE /roles/:key` | `roles:manage` | Custom roles. System roles are read-only |
 | `GET /audit?limit&entityType` | `audit:read` | The tenant's audit log, newest first |
+| `GET /dashboard?range=7d\|30d\|90d\|all` | `dashboard:view` | Fleet status, open rentals, per-vehicle figures, alerts |
+| `GET /vehicles` · `GET /vehicles/:id` | `vehicles:read` | The fleet with totals · a vehicle's dossier (rentals, costs, fuel the caller may read) |
+| `POST /vehicles` · `PATCH /vehicles/:id` · `DELETE /vehicles/:id` | `vehicles:create` · `vehicles:update` · `vehicles:delete` | Add (up to `limits.maxVehicles`), edit or send to maintenance, delete (only without history) |
+| `GET /vehicles/availability?startDate&endDate` | `rentals:create` | Each vehicle's availability for the dates, and why not |
+| `GET /renters` · `GET /renters/:id` | `renters:read` | Profiles with compliance gaps · a profile with its rentals |
+| `POST /renters` · `PATCH /renters/:id` · `POST /renters/:id/documents` | `renters:create` · `renters:update` | Register, edit, add a document |
+| `POST /renters/:id/documents/:documentId/verify` | `renters:documents:verify` | Mark a document checked |
+| `GET /rentals?status&vehicleId&renterId` · `GET /rentals/:id` | `rentals:read` | Rentals, newest first · one with its payments |
+| `POST /rentals` | `rentals:create` | Book (`advance` needs `payments:record`; `pickup` hands over at once and needs `rentals:checkin`) |
+| `POST /rentals/:id/check-in` · `/return` · `/cancel` | `rentals:checkin` · `rentals:return` · `rentals:cancel` | Hand over, record the return, cancel a booking |
+| `GET /calendar?month=YYYY-MM` | `calendar:view` | A month of the fleet schedule |
+| `GET /payments` · `POST /payments` · `POST /payments/:id/void` | `payments:read` · `payments:record` · `payments:void` | The ledger · record · void with a reason |
+| `GET /costs` · `POST /costs` · `DELETE /costs/:id` | `costs:read` · `costs:create` · `costs:delete` | Running costs |
+| `GET /fuel-logs` · `POST /fuel-logs` | `fuel:read` · `fuel:create` | Fuel fill-ups |
+| `GET /whatsapp/digest` | `whatsapp:view` | The weekly digest text, recipients and schedule |
 
 Clerk failures during these calls return 422 with Clerk's message when Clerk rejected the input, and 502 `clerk_unavailable` otherwise.
 
@@ -233,7 +253,7 @@ Clerk failures during these calls return 422 with Clerk's message when Clerk rej
 |---|---|---|---|
 | `backend` | Express API (JavaScript). Owns the rules; this documentation lives here | 5000 | `npm run dev` |
 | `adminDashboard` | Super admin app (Next.js 16, TypeScript) | 3001 | `npm run dev` |
-| `frontend` | Tenant app (Next.js 14, JavaScript → TypeScript in Phase 4) | 3000 | `npm run dev` |
+| `frontend` | Tenant app (Next.js 16, TypeScript) | 3000 | `npm run dev` |
 
 Each repo has its own `package-lock.json` and is installed with `npm install` inside it. Locally the three folders sit side by side; the apps reach each other only over HTTP. The admin dashboard needs `PLATFORM_API_URL`, the backend needs `CLERK_AUTHORIZED_PARTIES`.
 
@@ -243,7 +263,6 @@ Each repo has its own `package-lock.json` and is installed with `npm install` in
 - **Type drift.** The admin dashboard's `src/lib/contract.ts` mirrors the backend's response shapes by hand. The backend still rejects anything invalid, so drift shows up as a UI bug, not bad data. If it becomes a problem, generate the types from `GET /api/platform/meta` (`configJsonSchema`).
 - **Tenant-editable config.** Today only super admins edit config. Letting tenant admins edit a safe subset (branding, list labels) is a candidate for later.
 - **Dependency audit** (`npm audit`, October 2026):
-  - **Critical:** Next 14 in `frontend/`. The Phase 4 upgrade fixes it.
   - **Moderate:** aws-sdk v2 in `backend/`. The Phase 5 move to v3 fixes it.
   - **High:** a transitive glob/watcher chain (`fast-glob` → `micromatch` → `braces`) pulled in by dev tooling: `eslint-config-next`, the `shadcn` CLI, `nodemon`, Tailwind 3.
   - **Low:** `dompurify` via Monaco.

@@ -4,4 +4,10 @@ async function refreshMemberUsage({ Tenant, tenantId, Member }) {
   await Tenant.updateOne({ _id: tenantId }, { $set: { 'usage.members': members } });
 }
 
-module.exports = { refreshMemberUsage };
+/** Copies a tenant's vehicle count to `usage.vehicles`, shown against `limits.maxVehicles`. */
+async function refreshVehicleUsage({ Tenant, tenantId, Vehicle }) {
+  const vehicles = await Vehicle.countDocuments();
+  await Tenant.updateOne({ _id: tenantId }, { $set: { 'usage.vehicles': vehicles } });
+}
+
+module.exports = { refreshMemberUsage, refreshVehicleUsage };

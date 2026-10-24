@@ -76,9 +76,13 @@ Tenant admins (`roles:manage`) create roles in the tenant app's settings, throug
 
 ## Team invites
 
-1. A tenant admin (`team:manage`) invites an email address and picks a role (`POST /api/v1/invitations`).
+1. Someone invites an email address and picks a role:
+   - a super admin, from the tenant's **Users** page in the admin dashboard (`POST /api/platform/tenants/:id/invitations`). They act as an Owner, so they can invite Owners;
+   - or a tenant admin with `team:manage`, from the tenant app's Team page (`POST /api/v1/invitations`).
+
+   Both go through the same code (`src/tenant/team.js`), and changing roles or removing members works the same way.
 2. The backend checks `limits.maxUsers` against active members plus pending invitations. It then calls Clerk `createOrganizationInvitation` with `publicMetadata.roleKey`. The Clerk role is `org:admin` for Owner and `org:member` otherwise.
-3. When the invite is accepted, the `organizationMembership.created` webhook creates the `members` document with that `roleKey`.
+3. Clerk emails the invitation. Its link opens the tenant app's `/sign-up`, where the person creates their account (with a password when Clerk's password sign-in is on). Accepting makes them a member of the organization, and the `organizationMembership.created` webhook creates the `members` document with that `roleKey`.
 4. Role changes (`PATCH /api/v1/members/:id`) update `members.roleKey`. Moving someone into or out of Owner also updates their Clerk org role. If Clerk fails, the change is undone.
 5. Removing a member (`DELETE /api/v1/members/:id`) marks them `removed` and deletes the Clerk membership; the webhook confirms it. Audit history keeps their name.
 
@@ -95,7 +99,7 @@ Team and role changes are recorded in the tenant's `audit_logs`, readable with `
   - Only an Owner can make someone an Owner, or change or remove an Owner.
   - Nobody can invite with, assign, or define a role holding permissions they don't have.
   - Nobody can change or remove a member, or edit a role, whose permissions go beyond their own.
-- **Tenant app (UX only).** `GET /api/v1/me` returns `{ user, tenant, role, permissions, configVersion }`; the config itself comes from `GET /api/v1/config`. `<Can permission="financials:view">` and `useCan()` hide what the user can't use. Hiding UI is never the protection.
+- **Tenant app (UX only).** `GET /api/v1/me` returns `{ user, tenant, role, permissions, configVersion }`; the config itself comes from `GET /api/v1/config`. The app's `useWorkspace().can(permission)` hides tabs, buttons and forms the role can't use. Hiding UI is never the protection.
 - **Field-level rule.** Responses drop profit and margin fields unless the caller has `financials:view`, so a Staff user can't read them from the network tab.
   - `hideFinancialFields` strips them from every tenant response, at any depth. The field names are listed in `src/platform/rbac/financialFields.js`: `revenue`, `totalRevenue`, `operatingCosts`, `profit`, `grossProfit`, `netProfit`, `margin`, `profitMargin`, `roi`.
   - Handlers that return such figures must use those names. Raw amounts a role works with, like a rental total or a cost entry, aren't filtered.

@@ -64,7 +64,7 @@ function caller(baseUrl) {
 }
 
 let app; // createApp, as server.js builds it
-let probe; // createTenantRouter plus stand-ins for the feature routes later phases add
+let probe; // createTenantRouter plus stand-in routes under /probe that exercise the chain
 
 before(async () => {
   db = await startTestDb();
@@ -112,9 +112,9 @@ before(async () => {
 
   const router = createTenantRouter({ tenantAuth: stubTenantAuth, platformDb, getTenantDb, directory: service, cacheTtlMs: 0 });
   const vehiclesRead = [requireModule('vehicles'), requirePermission('vehicles:read')];
-  router.get('/vehicles', vehiclesRead, handle((req) => req.models.Vehicle.find().lean()));
+  router.get('/probe/vehicles', vehiclesRead, handle((req) => req.models.Vehicle.find().lean()));
   router.get(
-    '/vehicles/:id',
+    '/probe/vehicles/:id',
     vehiclesRead,
     handle(async (req) => {
       const vehicle = await req.models.Vehicle.findById(req.params.id).lean();
@@ -122,8 +122,8 @@ before(async () => {
       return vehicle;
     })
   );
-  router.get('/fuel-logs', requireModule('fuelLogs'), requirePermission('fuel:read'), handle((req) => req.models.FuelLog.find().lean()));
-  router.delete('/costs/:id', requireModule('costs'), requirePermission('costs:delete'), handle(() => ({ deleted: true })));
+  router.get('/probe/fuel-logs', requireModule('fuelLogs'), requirePermission('fuel:read'), handle((req) => req.models.FuelLog.find().lean()));
+  router.delete('/probe/costs/:id', requireModule('costs'), requirePermission('costs:delete'), handle(() => ({ deleted: true })));
   probe = caller(await listen(express().use('/api/v1', router).use(errorHandler)));
 });
 
@@ -201,33 +201,33 @@ describe('tenant API', () => {
 
 describe('tenant isolation and enforcement (Phase 1 exit criteria)', () => {
   it('an org A token reads only org A data', async () => {
-    const a = await probe('GET', '/api/v1/vehicles', A_OWNER);
-    const b = await probe('GET', '/api/v1/vehicles', B_OWNER);
+    const a = await probe('GET', '/api/v1/probe/vehicles', A_OWNER);
+    const b = await probe('GET', '/api/v1/probe/vehicles', B_OWNER);
     assert.deepEqual(a.body.map((v) => v.plateNumber), ['WP A-0001']);
     assert.deepEqual(b.body.map((v) => v.plateNumber), ['B-0001']);
   });
 
   it("an org A token can't fetch an org B record by id", async () => {
-    assert.equal((await probe('GET', `/api/v1/vehicles/${vehicleB.id}`, A_OWNER)).status, 404);
-    assert.equal((await probe('GET', `/api/v1/vehicles/${vehicleB.id}`, B_OWNER)).status, 200);
+    assert.equal((await probe('GET', `/api/v1/probe/vehicles/${vehicleB.id}`, A_OWNER)).status, 404);
+    assert.equal((await probe('GET', `/api/v1/probe/vehicles/${vehicleB.id}`, B_OWNER)).status, 200);
   });
 
   it("an org B member can't use their session against org A", async () => {
-    assert.equal((await probe('GET', '/api/v1/vehicles', { user: 'user_b_owner', org: ORG_A })).status, 403);
+    assert.equal((await probe('GET', '/api/v1/probe/vehicles', { user: 'user_b_owner', org: ORG_A })).status, 403);
   });
 
   it('a disabled module returns 404, even for an owner', async () => {
-    const disabled = await probe('GET', '/api/v1/fuel-logs', B_OWNER);
+    const disabled = await probe('GET', '/api/v1/probe/fuel-logs', B_OWNER);
     assert.equal(disabled.status, 404);
     assert.equal(disabled.body.error.code, 'not_found');
-    assert.equal((await probe('GET', '/api/v1/fuel-logs', A_OWNER)).body.length, 1);
+    assert.equal((await probe('GET', '/api/v1/probe/fuel-logs', A_OWNER)).body.length, 1);
   });
 
   it('a missing permission returns 403', async () => {
-    const staff = await probe('DELETE', '/api/v1/costs/123', A_STAFF);
+    const staff = await probe('DELETE', '/api/v1/probe/costs/123', A_STAFF);
     assert.equal(staff.status, 403);
     assert.match(staff.body.error.message, /costs:delete/);
-    assert.equal((await probe('DELETE', '/api/v1/costs/123', A_OWNER)).status, 200);
+    assert.equal((await probe('DELETE', '/api/v1/probe/costs/123', A_OWNER)).status, 200);
   });
 
   it('a published config change applies to the next request', async () => {
@@ -238,9 +238,9 @@ describe('tenant isolation and enforcement (Phase 1 exit criteria)', () => {
       await service.publishConfig(tenantB.id, { config, note: `Fuel logs ${enabled ? 'on' : 'off'}`, baseVersion: active.version }, ADMIN);
     };
     await publish(true);
-    assert.equal((await probe('GET', '/api/v1/fuel-logs', B_OWNER)).status, 200);
+    assert.equal((await probe('GET', '/api/v1/probe/fuel-logs', B_OWNER)).status, 200);
     await publish(false);
-    assert.equal((await probe('GET', '/api/v1/fuel-logs', B_OWNER)).status, 404);
+    assert.equal((await probe('GET', '/api/v1/probe/fuel-logs', B_OWNER)).status, 404);
   });
 
   it('refuses unknown modules and permissions when routes are defined', () => {

@@ -145,7 +145,7 @@ function createTeam({ clerk, platformDb }) {
 
       await viaClerk(() => clerk.revokeInvitation({ organizationId: ctx.orgId, invitationId }));
       await recordAudit(ctx, { action: 'invitation.revoked', entityType: 'invitation', entityId: invitationId, summary: `Revoked the invitation to ${invitation.emailAddress}` });
-      return { id: invitationId, revoked: true };
+      return { id: invitationId, email: invitation.emailAddress, revoked: true };
     },
 
     async changeRole(ctx, memberId, roleKey) {

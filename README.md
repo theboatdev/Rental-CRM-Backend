@@ -6,7 +6,7 @@ Express API (JavaScript) for the multi-tenant fleet rental platform. It owns the
 - the permission catalog
 - tenant lifecycle rules
 
-It serves those rules to the admin dashboard and, later, to the tenant app. It also serves the tenant API (`/api/v1`), with one MongoDB database per tenant.
+It serves those rules to the admin dashboard and the tenant app, and runs the tenant API (`/api/v1`) the tenant app works on, with one MongoDB database per tenant.
 
 ## Run locally
 
@@ -37,11 +37,12 @@ The first `npm test` downloads a MongoDB binary for `mongodb-memory-server` (cac
 | `src/models/` | Mongoose schemas: `platform/` (control plane) and `tenant/` (one DB per tenant). Each file exports a schema |
 | `src/routes/platform.js` | Super admin API under `/api/platform` |
 | `src/routes/tenant.js` | Tenant API under `/api/v1`: `/me`, `/config`, members, invitations, roles, audit |
+| `src/routes/operations.js` | Tenant API operations: dashboard, vehicles, renters, rentals and bookings, calendar, payments, costs, fuel, WhatsApp digest |
 | `src/routes/webhooks.js` | `POST /webhooks/clerk`: verified Clerk events |
 | `src/middleware/` | `platformAuth.js` (super admin check), `tenantAuth.js` (Clerk session with an organization), `tenantContext.js` (`resolveTenant`, `loadMember`, `requireModule`, `requirePermission`, `hideFinancialFields`), `database.js` (503 without a database), `errorHandler.js` |
-| `src/tenant/` | Tenant API logic: `team.js` (members, invitations, role changes), `roles.js` (custom roles), `access.js` (Owner and escalation rules), `audit.js` |
+| `src/tenant/` | Tenant API logic: `vehicles.js`, `renters.js`, `rentals.js` (the booking rules), `payments.js`, `costs.js`, `dashboard.js`; `team.js`, `roles.js`, `access.js` (Owner and escalation rules); `presenters.js` (response shapes), `metrics.js`, `common.js`, `audit.js` |
 | `src/platform/` | The rules (config schema, modules, templates, diff; RBAC; tenant rules) and the platform: `service.js` (tenants, configs, audit), `provisioning.js` (the job runner), `clerk.js` (every Clerk API call), `members.js` (member sync from webhooks) |
-| `test/` | Rule tests, HTTP tests for the platform API, provisioning, webhooks, tenancy and team management, on an in-memory MongoDB. `test/helpers/` has the DB setup, a fake Clerk gateway and the demo tenants |
+| `test/` | Rule tests, HTTP tests for the platform API, provisioning, webhooks, tenancy, team management and operations, on an in-memory MongoDB. `test/helpers/` has the DB setup, a fake Clerk gateway and the demo tenants |
 | `scripts/seed-tenant.js` | `npm run seed`: tenant DB indexes and roles, you as a member, optional demo data |
 
 ## Docs

@@ -25,7 +25,7 @@ const invalidJsonResult = (issues) => ({ valid: false, issues, changes: [], remo
  * `req.actor`. The rules (/meta, /config/validate) work without a database;
  * everything after them needs `platformDb` connected.
  */
-function createPlatformRouter({ service, platformAuth, platformDb }) {
+function createPlatformRouter({ service, tenantUsers, platformAuth, platformDb }) {
   const router = express.Router();
   router.use(platformAuth);
 
@@ -79,6 +79,16 @@ function createPlatformRouter({ service, platformAuth, platformDb }) {
       201
     )
   );
+
+  // A tenant's users: the same rules as the tenant app's Team page, with the super admin acting as an Owner.
+  const users = (tenantPath) => `/tenants/:tenantId/${tenantPath}`;
+  router.get(users('members'), handle((req) => tenantUsers.listMembers(req.params.tenantId, req.actor)));
+  router.patch(users('members/:memberId'), handle((req) => tenantUsers.changeRole(req.params.tenantId, req.actor, req.params.memberId, req.body?.roleKey)));
+  router.delete(users('members/:memberId'), handle((req) => tenantUsers.removeMember(req.params.tenantId, req.actor, req.params.memberId)));
+  router.get(users('invitations'), handle((req) => tenantUsers.listInvitations(req.params.tenantId, req.actor)));
+  router.post(users('invitations'), handle((req) => tenantUsers.invite(req.params.tenantId, req.actor, req.body), 201));
+  router.delete(users('invitations/:invitationId'), handle((req) => tenantUsers.revokeInvitation(req.params.tenantId, req.actor, req.params.invitationId)));
+  router.get(users('roles'), handle((req) => tenantUsers.listRoles(req.params.tenantId, req.actor)));
 
   router.get(
     '/audit',

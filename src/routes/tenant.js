@@ -12,19 +12,11 @@ const { ALL_PERMISSIONS } = require('../platform/rbac/permissions');
 const { createTeam } = require('../tenant/team');
 const { createRoles } = require('../tenant/roles');
 const { listAudit } = require('../tenant/audit');
+const { contextOf } = require('../tenant/context');
+const { registerOperationRoutes } = require('./operations');
 
 /** Routes every member may call, so they have no permission check. Every other tenant route must have one (see test/team.test.js). */
 const OPEN_ROUTES = ['/me', '/config'];
-
-/** What the team, role and audit functions need from a request. */
-const contextOf = (req) => ({
-  models: req.models,
-  config: req.config,
-  tenantId: req.tenant.id,
-  orgId: req.identity.orgId,
-  role: req.role,
-  actor: { id: req.identity.userId, name: req.member.name || req.member.email }
-});
 
 /**
  * Tenant API under /api/v1. Every route runs behind the tenant chain:
@@ -99,6 +91,8 @@ function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, cl
       })
     )
   );
+
+  registerOperationRoutes(router, { platformDb });
 
   return router;
 }

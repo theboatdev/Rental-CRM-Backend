@@ -93,21 +93,34 @@ Exit (met in tests with the fake Clerk; run it against your Clerk instance with 
 - **Tenant audit log.** Team and role changes are recorded; `GET /api/v1/audit` lists them (`audit:read`).
 - **Tests.** `test/team.test.js`: the route guard, injection payloads, invitations and `maxUsers`, role changes and the Owner race, Clerk failures, escalation, role CRUD, field filtering and the audit log. 115 tests in all.
 
-## Phase 4: Tenant app migration
+## Phase 4: Tenant app migration ✅
 
-- **Platform upgrade.** Upgrade `frontend/` to the same Next/React major version as the admin dashboard and convert it to TypeScript as each file is touched.
-- **Clerk.** Add `@clerk/nextjs` with the organization-required flow, and remove the demo role switcher.
-- **Config.** A `ConfigProvider` loads `GET /api/v1/config` and drives tab order and labels from `navigation`, branding CSS variables, `Intl` currency and date formatting, and the dropdown lists. Response types are mirrored in a `contract.ts`, as in the admin dashboard; permissions come from `GET /api/v1/me`.
-- **Data.** Replace `context/StoreContext.jsx` (localStorage) with an API client (TanStack Query), one module at a time:
-  1. vehicles
-  2. renters
-  3. rentals and bookings: move the `lib/bookings.mjs` rules server-side, inside Mongo transactions
-  4. payments
-  5. costs and fuel
-  6. dashboard
-  7. WhatsApp
-- **Team settings.** Add Team & Roles pages for tenant admins.
-- **Cleanup.** Remove the Vite leftovers (`src/`, `index.html`, `vite.config.js`).
+- **Backend operations API** (`src/tenant/`, routes in `src/routes/operations.js`). Every route has `requireModule` and `requirePermission`.
+  - `vehicles.js`: fleet CRUD with per-vehicle totals and a dossier (rentals, costs, fuel). Enforces `limits.maxVehicles`.
+  - `renters.js`: profiles with codes from `rules.codePrefixes.renter`, documents keyed by `lists.documentTypes`, verification, and compliance gaps.
+  - `rentals.js`: the `lib/bookings.mjs` rules, server-side in transactions.
+    - Reserve, optionally with an advance and an immediate hand-over.
+    - Check in (inspection from `modules.rentals.inspectionPoints`).
+    - Return, cancel, availability and the month calendar.
+    - A per-vehicle lock means two bookings can't take the same days.
+    - An overdue rental keeps its vehicle until it's returned.
+  - `payments.js`: receipts and advances numbered from the config's prefixes; refunds; voids with a reason. `rental.paidAmount` stays in step.
+  - `costs.js`: service costs (`lists.costCategories`) and fuel logs.
+  - `dashboard.js`: the dashboard (fleet, open rentals, per-vehicle figures, alerts) and the WhatsApp digest text. Money figures only go to `financials:view`.
+- **Tenant app** (`frontend/`, see its README).
+  - Rebuilt on Next 16, React 19, TypeScript, Tailwind 4 and TanStack Query, with the same look.
+  - Clerk with organization-required sign-in, plus `/sign-up` for accepting invitations. The demo role switcher is gone.
+  - Config-driven: tabs from `navigation`, the brand colour, locale formatting and list dropdowns. `contract.ts` mirrors the API; permissions come from `GET /api/v1/me`.
+  - Pages: dashboard, vehicles, renters, rentals, calendar, payments, costs and fuel, WhatsApp digest, team and roles.
+- **Tenant users from the admin dashboard.** A **Users** page per tenant, on `/api/platform/tenants/:id/{members,invitations,roles}` (`src/platform/tenantUsers.js`). Super admins invite users with any role, change roles and remove people, with the same rules as the tenant app's Team page.
+- **Cleanup.** Removed the Vite leftovers, `context/StoreContext.jsx` and `lib/bookings.mjs` (its tests moved to the backend).
+- **Tests.** `test/operations.test.js` covers vehicles, renters, the booking rules (overlaps, back-to-back, concurrent bookings, check-in, return, cancel, overdue), payments, costs and fuel, the dashboard and digest with field filtering, and isolation. `test/tenant-users.test.js` covers the super admin's user management. The tenant app is checked with `typecheck`, `lint` and `build`. 147 backend tests in all.
+
+Moved to Phase 5, because they need file storage or a scheduler:
+- photos for each inspection point;
+- document and bill uploads (and `modules.costs.requireBillUpload`);
+- the guest registration page;
+- sending the digest on its schedule.
 
 ## Phase 5: Files, guest portal, automation
 

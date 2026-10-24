@@ -35,8 +35,8 @@ Conventions:
 | `roles` (`Role`) | `key`, `name`, `description`, `permissions [string]`, `system` | `key` unique |
 | `vehicles` (`Vehicle`) | `plateNumber`, `make`, `model`, `year`, `transmission` (`AUTOMATIC` · `MANUAL`), `fuelType` (`PETROL` · `DIESEL` · `HYBRID` · `ELECTRIC`), `dailyRate`, `secondaryDailyRate`, `depositAmount`, `mileage`, `status` (`AVAILABLE` · `RENTED` · `MAINTENANCE`), `thumbnail`, `notes` | `plateNumber` unique; `status` |
 | `renters` (`Renter`) | `profileId` (e.g. `SR-0146`), `fullName`, `phone`, `email`, `residentType` (`local` · `tourist`), `country`, `address`, `emergencyContact { name, phone, relation }`, `documents [{ type (list key), number, fileKey, verified, verifiedBy, verifiedAt, uploadedAt }]`, `source` (`COUNTER` · `ONLINE`), `notes` | `profileId` unique; `phone` |
-| `rentals` (`Rental`) | `code` (`RNT-…`, or `BK-…` while reserved), `renter`, `vehicle`, `status` (`RESERVED` · `ACTIVE` · `COMPLETED` · `CANCELLED`), `source`, `startDate`, `endDate`, `actualReturnDate`, `totalDays`, `dailyRate`, `totalAmount`, `depositAmount`, `paidAmount`, `depositRefunded`, `startMileage`, `endMileage`, `pickupInspection` and `dropInspection` (`{ at, by, odometer, photos [{ point, fileKey }], notes }`), `cancelledAt`, `createdBy`, `notes` | `code` unique; `{ vehicle, status, startDate }`; `{ renter, startDate }` |
-| `payments` (`Payment`) | `receiptNumber` (`RCPT-…` or `ADV-…`), `rental`, `renter`, `type` (`ADVANCE` · `RENTAL` · `DEPOSIT` · `DEPOSIT_REFUND` · `DAMAGE` · `LATE_FEE`), `method` (list key), `amount`, `transactionReference`, `paidAt`, `receivedBy`, `voidedAt`, `voidedBy`, `voidReason`, `notes` | `receiptNumber` unique; `rental`; `paidAt` |
+| `rentals` (`Rental`) | `code` (`RNT-…`, or `BK-…` while reserved), `bookingCode` (the `BK-…` code after check-in), `renter`, `vehicle`, `status` (`RESERVED` · `ACTIVE` · `COMPLETED` · `CANCELLED`), `source`, `startDate`, `endDate`, `actualReturnDate`, `totalDays`, `dailyRate`, `totalAmount`, `depositAmount`, `paidAmount`, `depositRefunded`, `startMileage`, `endMileage`, `pickupInspection` and `dropInspection` (`{ at, by, odometer, photos [{ point, fileKey }], notes }`), `cancelledAt`, `createdBy`, `notes` | `code` unique; `{ vehicle, status, startDate }`; `{ renter, startDate }` |
+| `payments` (`Payment`) | `receiptNumber` (`RCPT-…` or `ADV-…`), `rental`, `renter`, `type` (`ADVANCE` · `RENTAL` · `DEPOSIT` · `DAMAGE` · `LATE_FEE` · `REFUND`), `method` (list key), `amount`, `transactionReference`, `paidAt`, `receivedBy`, `voidedAt`, `voidedBy`, `voidReason`, `notes` | `receiptNumber` unique; `rental`; `paidAt` |
 | `costs` (`VehicleCost`) | `vehicle`, `category` (list key), `title`, `amount`, `incurredAt`, `serviceCenter`, `invoiceNumber`, `billFileKey`, `odometer`, `createdBy`, `notes` | `{ vehicle, incurredAt }`; `incurredAt` |
 | `fuel_logs` (`FuelLog`) | `vehicle`, `filledAt`, `liters`, `pricePerLiter`, `totalCost`, `station`, `odometer`, `createdBy`, `notes` | `{ vehicle, filledAt }` |
 | `counters` (`Counter`) | `_id` (sequence key, e.g. `rental:2026`), `seq`. `Counter.next(key, { session })` takes the next number atomically | — |
@@ -45,7 +45,7 @@ Conventions:
 Notes:
 
 - **Derived values aren't stored.** Overdue is an `ACTIVE` rental past its `endDate`. Payment status compares `paidAmount` with `totalAmount + depositAmount`. A vehicle's current renter is its `ACTIVE` rental.
-- **`paidAmount`** is kept in step with `payments` inside the transaction that records or voids a payment (Phase 4).
+- **`paidAmount`** is kept in step with `payments` inside the transaction that records or voids a payment.
 - **Ledger entries are voided, never deleted** (`payments:void`).
 - **`fileKey` fields** are S3 object keys under `tenants/<tenantId>/`, served through presigned URLs (Phase 5).
 

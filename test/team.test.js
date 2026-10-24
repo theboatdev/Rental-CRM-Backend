@@ -158,7 +158,7 @@ describe('members and invitations', () => {
       assert.match(full.body.error.message, new RegExp(`allows ${3 + pending.length} users`));
 
       const coOwner = pending.find((i) => i.email === 'co-owner@example.com');
-      assert.deepEqual((await owner('DELETE', `/invitations/${coOwner.id}`)).body, { id: coOwner.id, revoked: true });
+      assert.deepEqual((await owner('DELETE', `/invitations/${coOwner.id}`)).body, { id: coOwner.id, email: 'co-owner@example.com', revoked: true });
       assert.equal((await owner('POST', '/invitations', { email: 'one-more@example.com', roleKey: 'staff' })).status, 201);
       assert.equal((await owner('DELETE', '/invitations/orginv_missing')).status, 404);
     } finally {
