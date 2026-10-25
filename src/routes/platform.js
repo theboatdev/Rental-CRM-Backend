@@ -18,7 +18,7 @@ function readConfigBody(body) {
   }
 }
 
-const invalidJsonResult = (issues) => ({ valid: false, issues, changes: [], removedListKeys: [] });
+const invalidJsonResult = (issues) => ({ valid: false, issues, changes: [], removedListKeys: [], customFieldChanges: [] });
 
 /**
  * Super admin API. Every route runs behind `platformAuth`, which sets

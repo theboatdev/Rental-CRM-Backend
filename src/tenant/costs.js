@@ -2,6 +2,7 @@ const { z } = require('zod');
 const { parse, findOr404, todayIn, toDate, DateStringSchema, IdSchema, activeListKey } = require('./common');
 const { presentCost, presentFuelLog } = require('./presenters');
 const { recordAudit } = require('./audit');
+const { parseRecord, customFieldsInput } = require('./fields');
 
 const CostInputSchema = (config) =>
   z.strictObject({
@@ -13,7 +14,8 @@ const CostInputSchema = (config) =>
     serviceCenter: z.string().trim().max(120).optional(),
     invoiceNumber: z.string().trim().max(60).optional(),
     odometer: z.number().int().min(0).optional(),
-    notes: z.string().trim().max(1000).default('')
+    notes: z.string().trim().max(1000).default(''),
+    customFields: customFieldsInput(config, 'costs')
   });
 
 const FuelInputSchema = z
@@ -55,7 +57,7 @@ function createCosts() {
     },
 
     async createCost(ctx, input) {
-      const data = parse(CostInputSchema(ctx.config), input);
+      const data = parseRecord(CostInputSchema(ctx.config), input, ctx.config, 'costs');
       const vehicle = await findOr404(ctx.models.Vehicle, data.vehicleId, 'Vehicle');
       const { vehicleId, incurredAt, ...fields } = data;
       const cost = await ctx.models.VehicleCost.create({

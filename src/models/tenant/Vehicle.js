@@ -7,7 +7,7 @@ const vehicleSchema = new Schema(
     plateNumber: { type: String, required: true, trim: true }, // e.g. WP CAH-4821
     make: { type: String, required: true, trim: true },
     model: { type: String, required: true, trim: true },
-    year: { type: Number, required: true, min: 1950, max: 2100 },
+    year: { type: Number, min: 1950, max: 2100 }, // required unless the config turns it off (fields.vehicles)
     transmission: { type: String, enum: TRANSMISSIONS, default: 'AUTOMATIC' },
     fuelType: { type: String, enum: FUEL_TYPES, default: 'PETROL' },
     dailyRate: { type: Number, required: true, min: 0 },
@@ -16,7 +16,8 @@ const vehicleSchema = new Schema(
     mileage: { type: Number, default: 0, min: 0 },
     status: { type: String, enum: VEHICLE_STATUSES, default: 'AVAILABLE' },
     thumbnail: { type: String },
-    notes: { type: String }
+    notes: { type: String },
+    customFields: { type: Schema.Types.Mixed } // values of the config's customFields, by field key
   },
   { collection: 'vehicles', timestamps: true }
 );

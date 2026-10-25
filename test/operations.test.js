@@ -6,6 +6,7 @@ const { errorHandler } = require('../src/middleware/errorHandler');
 const { createPlatformService } = require('../src/platform/service');
 const { forbidden, unauthenticated } = require('../src/platform/errors');
 const { todayIn, addDays, toDate } = require('../src/tenant/common');
+const { DEFAULT_FIELDS } = require('../src/platform/config/schema');
 const { startTestDb } = require('./helpers/db');
 const { createFakeClerk, orgIdFor } = require('./helpers/fakeClerk');
 
@@ -469,5 +470,193 @@ describe('tenant isolation', () => {
     assert.equal((await other('POST', `/rentals/${rental.id}/cancel`)).status, 404);
     assert.deepEqual((await other('GET', '/rentals')).body, []);
     assert.equal((await other('POST', '/rentals', { vehicleId: vehicle.id, renterId: renter.id, startDate: TODAY, endDate: addDays(TODAY, 2) })).status, 404);
+  });
+});
+
+describe('custom fields', () => {
+  const option = (key, active = true) => ({ key, label: key, active });
+
+  before(() =>
+    publish(tenantA, (config) => {
+      config.fields.vehicles.custom = [
+        { key: 'insuranceExpiry', label: 'Insurance expiry', type: 'date', required: true },
+        { key: 'colour', label: 'Colour', type: 'select', options: [option('WHITE'), option('BLACK'), option('RED', false)] },
+        { key: 'seats', label: 'Seats', type: 'number', min: 2, max: 9 },
+        { key: 'gpsSerial', label: 'GPS serial', type: 'text', maxLength: 12 }
+      ];
+      config.fields.rentals.custom = [
+        { key: 'flightNumber', label: 'Flight number', type: 'text', required: true },
+        { key: 'childSeat', label: 'Child seat', type: 'boolean' }
+      ];
+      config.fields.payments.custom = [{ key: 'receivedAt', label: 'Received at', type: 'select', required: true, options: [option('COUNTER'), option('AIRPORT')] }];
+      config.fields.costs.custom = [{ key: 'warrantyClaim', label: 'Warranty claim', type: 'boolean' }];
+      config.limits.maxVehicles = 100;
+    })
+  );
+  after(() => publish(tenantA, (config) => delete config.fields));
+
+  it('serves the fields in the tenant config', async () => {
+    const { body } = await staff('GET', '/config');
+    assert.deepEqual(body.config.fields.vehicles.custom.map((f) => f.key), ['insuranceExpiry', 'colour', 'seats', 'gpsSerial']);
+    assert.equal(body.config.fields.vehicles.builtIn.plateNumber.label, 'Registration plate');
+  });
+
+  it('validates values on create: required, unknown keys, inactive options, ranges', async () => {
+    const vehicle = { plateNumber: 'WP CF-1', make: 'Toyota', model: 'Aqua', year: 2020, dailyRate: 9000 };
+    const missing = await owner('POST', '/vehicles', vehicle);
+    assert.equal(missing.status, 422);
+    assert.deepEqual(missing.body.error.issues, [{ path: 'customFields.insuranceExpiry', message: 'Required' }]);
+
+    const bad = await owner('POST', '/vehicles', {
+      ...vehicle,
+      customFields: { insuranceExpiry: '2026-02-30', colour: 'RED', seats: 12, gpsSerial: 'X'.repeat(13), mood: 'happy' }
+    });
+    assert.equal(bad.status, 422);
+    assert.deepEqual(bad.body.error.issues.map((i) => i.path).sort(), [
+      'customFields.colour',
+      'customFields.gpsSerial',
+      'customFields.insuranceExpiry',
+      'customFields.mood',
+      'customFields.seats'
+    ]);
+
+    const created = await owner('POST', '/vehicles', { ...vehicle, customFields: { insuranceExpiry: '2027-03-31', colour: 'WHITE', seats: 5, gpsSerial: '  ' } });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.deepEqual(created.body.customFields, { insuranceExpiry: '2027-03-31', colour: 'WHITE', seats: 5 });
+  });
+
+  it('merges edits: only the fields sent change, blanks clear, required ones stay', async () => {
+    const vehicle = await addVehicle({ customFields: { insuranceExpiry: '2027-01-01', seats: 4 } });
+    const edited = await staff('PATCH', `/vehicles/${vehicle.id}`, { customFields: { colour: 'BLACK', seats: null } });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.deepEqual(edited.body.customFields, { insuranceExpiry: '2027-01-01', colour: 'BLACK' });
+
+    const cleared = await staff('PATCH', `/vehicles/${vehicle.id}`, { customFields: { insuranceExpiry: '' } });
+    assert.equal(cleared.status, 422);
+    assert.deepEqual(cleared.body.error.issues, [{ path: 'customFields.insuranceExpiry', message: 'Required' }]);
+
+    const [entry] = await modelsA().AuditLog.find({ action: 'vehicle.updated', entityId: vehicle.id }).lean();
+    assert.match(entry.summary, /colour, seats$/);
+  });
+
+  it('keeps the values of a deactivated field and ignores new ones', async () => {
+    const vehicle = await addVehicle({ customFields: { insuranceExpiry: '2027-01-01', gpsSerial: 'GPS-1' } });
+    await publish(tenantA, (config) => (config.fields.vehicles.custom.find((f) => f.key === 'gpsSerial').active = false));
+    try {
+      const ignored = await owner('PATCH', `/vehicles/${vehicle.id}`, { make: 'Honda', customFields: { gpsSerial: 'GPS-2' } });
+      assert.equal(ignored.status, 200, JSON.stringify(ignored.body));
+      assert.equal(ignored.body.make, 'Honda');
+      assert.equal(ignored.body.customFields.gpsSerial, 'GPS-1');
+    } finally {
+      await publish(tenantA, (config) => (config.fields.vehicles.custom.find((f) => f.key === 'gpsSerial').active = true));
+    }
+  });
+
+  it('takes rental and advance fields on booking, and edits them later', async () => {
+    const vehicle = await addVehicle({ customFields: { insuranceExpiry: '2027-01-01' } });
+    const renter = await addRenter();
+    const advance = { amount: 5000, method: 'CASH' };
+
+    const missing = await book(vehicle, renter, { advance });
+    assert.equal(missing.status, 422);
+    assert.deepEqual(missing.body.error.issues.map((i) => i.path).sort(), ['advance.customFields.receivedAt', 'customFields.flightNumber']);
+
+    const booked = await book(vehicle, renter, { customFields: { flightNumber: 'UL 504' }, advance: { ...advance, customFields: { receivedAt: 'AIRPORT' } } });
+    assert.equal(booked.status, 201, JSON.stringify(booked.body));
+    assert.deepEqual(booked.body.customFields, { flightNumber: 'UL 504' });
+    assert.deepEqual(booked.body.payments[0].customFields, { receivedAt: 'AIRPORT' });
+
+    const edited = await staff('PATCH', `/rentals/${booked.body.id}`, { notes: 'Meet at arrivals', customFields: { childSeat: true } });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.equal(edited.body.notes, 'Meet at arrivals');
+    assert.deepEqual(edited.body.customFields, { flightNumber: 'UL 504', childSeat: true });
+    assert.equal((await accountant('PATCH', `/rentals/${booked.body.id}`, { notes: 'x' })).status, 403);
+    assert.equal((await staff('PATCH', `/rentals/${booked.body.id}`, { startDate: TODAY })).status, 422);
+  });
+
+  it('stores payment and cost fields', async () => {
+    const vehicle = await addVehicle({ customFields: { insuranceExpiry: '2027-01-01' } });
+    const rental = (await book(vehicle, await addRenter(), { customFields: { flightNumber: 'EK 650' } })).body;
+    const payment = await staff('POST', '/payments', { rentalId: rental.id, type: 'RENTAL', method: 'CASH', amount: 1000, customFields: { receivedAt: 'COUNTER' } });
+    assert.equal(payment.status, 201, JSON.stringify(payment.body));
+    assert.deepEqual(payment.body.customFields, { receivedAt: 'COUNTER' });
+
+    const cost = await staff('POST', '/costs', { vehicleId: vehicle.id, category: 'ROUTINE_MAINTENANCE', title: 'Oil change', amount: 8000, customFields: { warrantyClaim: false } });
+    assert.equal(cost.status, 201, JSON.stringify(cost.body));
+    assert.deepEqual(cost.body.customFields, { warrantyClaim: false });
+    assert.deepEqual((await staff('GET', '/costs')).body.find((c) => c.id === cost.body.id).customFields, { warrantyClaim: false });
+  });
+});
+
+describe('built-in fields', () => {
+  const builtIn = (config, section, key, settings) => Object.assign(config.fields[section].builtIn[key], settings);
+  // Each test starts from the default field settings.
+  const publishFields = (change) =>
+    publish(tenantA, (config) => {
+      config.fields = structuredClone(DEFAULT_FIELDS);
+      change(config);
+    });
+  after(() => publish(tenantA, (config) => delete config.fields));
+
+  it('drops fields that are off, and lets a vehicle go without its year', async () => {
+    await publishFields((config) => {
+      builtIn(config, 'vehicles', 'year', { active: false });
+      builtIn(config, 'vehicles', 'transmission', { active: false });
+      config.limits.maxVehicles = 100;
+    });
+    const created = await owner('POST', '/vehicles', { plateNumber: 'WP BI-1', make: 'Suzuki', model: 'Alto', dailyRate: 6000, transmission: 'MANUAL' });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.year, null);
+    assert.equal(created.body.transmission, 'AUTOMATIC');
+
+    const edited = await owner('PATCH', `/vehicles/${created.body.id}`, { year: 2019, mileage: 1200 });
+    assert.equal(edited.status, 200);
+    assert.equal(edited.body.year, null);
+    assert.equal(edited.body.mileage, 1200);
+  });
+
+  it('requires fields made required, on create and when an edit clears them', async () => {
+    await publishFields((config) => {
+      builtIn(config, 'renters', 'email', { required: true });
+      builtIn(config, 'renters', 'emergencyContact', { required: true });
+    });
+    const missing = await staff('POST', '/renters', { fullName: 'Kamal Silva', phone: '+94 71 555 0101' });
+    assert.equal(missing.status, 422);
+    assert.deepEqual(missing.body.error.issues, [
+      { path: 'email', message: 'Required' },
+      { path: 'emergencyContact', message: 'Required' }
+    ]);
+
+    const renter = await staff('POST', '/renters', { fullName: 'Kamal Silva', phone: '+94 71 555 0101', email: 'kamal@example.com', emergencyContact: { name: 'Nimali' } });
+    assert.equal(renter.status, 201, JSON.stringify(renter.body));
+    assert.equal((await staff('PATCH', `/renters/${renter.body.id}`, { notes: 'Regular' })).status, 200);
+    const cleared = await staff('PATCH', `/renters/${renter.body.id}`, { email: null });
+    assert.equal(cleared.status, 422);
+    assert.deepEqual(cleared.body.error.issues, [{ path: 'email', message: 'Required' }]);
+  });
+
+  it("applies the payment fields to a booking's advance, and takes the vehicle's rate when the rate field is off", async () => {
+    await publishFields((config) => {
+      builtIn(config, 'payments', 'transactionReference', { required: true });
+      builtIn(config, 'rentals', 'dailyRate', { active: false });
+    });
+    const vehicle = await addVehicle();
+    const renter = await addRenter();
+    const missing = await book(vehicle, renter, { advance: { amount: 1000, method: 'CASH' } });
+    assert.equal(missing.status, 422);
+    assert.deepEqual(missing.body.error.issues, [{ path: 'advance.transactionReference', message: 'Required' }]);
+
+    const booked = await book(vehicle, renter, { dailyRate: 1, advance: { amount: 1000, method: 'CASH', transactionReference: 'SLIP-9' } });
+    assert.equal(booked.status, 201, JSON.stringify(booked.body));
+    assert.equal(booked.body.dailyRate, vehicle.dailyRate);
+    assert.equal(booked.body.payments[0].transactionReference, 'SLIP-9');
+  });
+
+  it('dates a cost today when its date field is off', async () => {
+    await publishFields((config) => builtIn(config, 'costs', 'incurredAt', { active: false }));
+    const vehicle = await addVehicle();
+    const cost = await staff('POST', '/costs', { vehicleId: vehicle.id, category: 'ROUTINE_MAINTENANCE', title: 'Wash', amount: 1500, incurredAt: '2020-01-01' });
+    assert.equal(cost.status, 201, JSON.stringify(cost.body));
+    assert.equal(cost.body.incurredAt, TODAY);
   });
 });

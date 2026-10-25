@@ -21,6 +21,7 @@ const {
 const { presentRental, presentPayment, vehicleRef } = require('./presenters');
 const { recordPaymentIn } = require('./payments');
 const { recordAudit } = require('./audit');
+const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields } = require('./fields');
 
 /**
  * Rentals and bookings: reserve, check in, return, cancel. These are the
@@ -56,12 +57,23 @@ const ReservationSchema = (config) =>
     depositAmount: z.number().min(0).optional(),
     // An advance collected with the booking (needs payments:record).
     advance: z
-      .strictObject({ amount: z.number().positive(), method: activeListKey(config, 'paymentMethods'), transactionReference: z.string().trim().max(80).optional() })
+      .strictObject({
+        amount: z.number().positive(),
+        method: activeListKey(config, 'paymentMethods'),
+        transactionReference: z.string().trim().max(80).optional(),
+        notes: z.string().trim().max(500).optional(),
+        customFields: customFieldsInput(config, 'payments')
+      })
       .optional(),
     notes: z.string().trim().max(1000).default(''),
+    customFields: customFieldsInput(config, 'rentals'),
     // Hand the vehicle over straight away (needs rentals:checkin): booking and check-in in one step.
     pickup: InspectionSchema.optional()
   });
+
+/** Notes and custom fields stay editable whatever the rental's status; dates and amounts don't change here. */
+const RentalUpdateSchema = (config) =>
+  z.strictObject({ notes: z.string().trim().max(1000).optional(), customFields: customFieldsInput(config, 'rentals', { update: true }) });
 
 const AvailabilityQuerySchema = z.strictObject({ startDate: DateStringSchema, endDate: DateStringSchema, excludeRentalId: IdSchema.optional() });
 
@@ -169,7 +181,7 @@ function createRentals() {
      * once, all in one transaction.
      */
     async reserve(ctx, input) {
-      const data = parse(ReservationSchema(ctx.config), input);
+      const data = parseRecord(ReservationSchema(ctx.config), input, ctx.config, 'rentals', { nested: { advance: 'payments' } });
       if (data.pickup && !can(ctx, 'rentals:checkin')) throw forbidden("You don't have the rentals:checkin permission");
       if (data.advance && !(moduleOn(ctx, 'payments') && can(ctx, 'payments:record'))) throw forbidden("You don't have the payments:record permission");
 
@@ -213,7 +225,8 @@ function createRentals() {
               depositAmount,
               paidAmount: 0,
               createdBy: ctx.actor,
-              notes: data.notes
+              notes: data.notes,
+              customFields: data.customFields
             }
           ],
           { session }
@@ -247,6 +260,20 @@ function createRentals() {
         entityId: rentalId,
         summary: `Handed over ${result.plateNumber}: ${result.bookingCode} is now ${result.code}`
       });
+      return getRental(ctx, rentalId);
+    },
+
+    async updateRental(ctx, rentalId, input) {
+      const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental');
+      const { customFields, ...changes } = parseRecord(RentalUpdateSchema(ctx.config), input, ctx.config, 'rentals', { update: true });
+      await ctx.models.Rental.updateOne({ _id: rental._id }, updateWithCustomFields(changes, customFields));
+      const fields = [
+        ...Object.keys(changes).filter((key) => changes[key] !== (rental[key] ?? '')),
+        ...changedCustomFields(rental, customFields)
+      ];
+      if (fields.length) {
+        await recordAudit(ctx, { action: 'rental.updated', entityType: 'rental', entityId: rentalId, summary: `Updated ${rental.code}: ${fields.join(', ')}` });
+      }
       return getRental(ctx, rentalId);
     },
 

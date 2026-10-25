@@ -4,6 +4,7 @@ const { conflict, invalid } = require('../platform/errors');
 const { parse, findOr404, inTransaction, lock, nextCode, todayIn, IdSchema, activeListKey } = require('./common');
 const { presentPayment } = require('./presenters');
 const { recordAudit } = require('./audit');
+const { parseRecord, customFieldsInput } = require('./fields');
 
 const PaymentInputSchema = (config) =>
   z.strictObject({
@@ -12,7 +13,8 @@ const PaymentInputSchema = (config) =>
     method: activeListKey(config, 'paymentMethods'),
     amount: z.number().positive(),
     transactionReference: z.string().trim().max(80).optional(),
-    notes: z.string().trim().max(500).default('')
+    notes: z.string().trim().max(500).default(''),
+    customFields: customFieldsInput(config, 'payments')
   });
 
 const VoidInputSchema = z.strictObject({ reason: z.string().trim().min(3).max(300) });
@@ -27,7 +29,7 @@ const signOf = (type) => (type === 'REFUND' ? -1 : 1);
  * rental and keeps `rental.paidAmount` in step. Receipts are numbered with
  * the config's prefixes: `advance` for advances, `receipt` for the rest.
  */
-async function recordPaymentIn(ctx, session, rental, { type, method, amount, transactionReference, notes = '' }) {
+async function recordPaymentIn(ctx, session, rental, { type, method, amount, transactionReference, notes = '', customFields }) {
   const paid = rental.paidAmount ?? 0;
   if (rental.status === 'CANCELLED' && type !== 'REFUND') {
     throw conflict(`${rental.code} was cancelled, so only refunds can be recorded against it`);
@@ -58,6 +60,7 @@ async function recordPaymentIn(ctx, session, rental, { type, method, amount, tra
         amount,
         transactionReference,
         notes,
+        customFields,
         paidAt: new Date(),
         receivedBy: ctx.actor
       }
@@ -89,7 +92,7 @@ function createPayments() {
     },
 
     async recordPayment(ctx, input) {
-      const data = parse(PaymentInputSchema(ctx.config), input);
+      const data = parseRecord(PaymentInputSchema(ctx.config), input, ctx.config, 'payments');
       let paymentId;
       let summary;
       await inTransaction(ctx, async (session) => {

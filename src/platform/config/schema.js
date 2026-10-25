@@ -1,6 +1,8 @@
 const { z } = require('zod');
 const { MODULES, MODULE_KEYS, TAB_MODULE_KEYS } = require('./modules');
 const { formatPath } = require('./path');
+const { FINANCIAL_FIELDS } = require('../rbac/financialFields');
+const { BUILT_IN_FIELDS, FIELD_SECTIONS } = require('./fields');
 
 const CONFIG_SCHEMA_VERSION = 1;
 const RESIDENT_TYPES = ['local', 'tourist'];
@@ -141,20 +143,17 @@ const DocumentTypeSchema = ListItemSchema.extend({
   requiredFor: z.array(z.enum(RESIDENT_TYPES)).default([])
 });
 
-function keyedList(item) {
-  return z
-    .array(item)
-    .min(1)
-    .superRefine((items, ctx) => {
-      const seen = new Set();
-      items.forEach((entry, index) => {
-        if (seen.has(entry.key)) {
-          ctx.addIssue({ code: 'custom', message: `Duplicate key "${entry.key}"`, path: [index, 'key'] });
-        }
-        seen.add(entry.key);
-      });
-    });
+function uniqueKeys(items, ctx) {
+  const seen = new Set();
+  items.forEach((entry, index) => {
+    if (seen.has(entry.key)) {
+      ctx.addIssue({ code: 'custom', message: `Duplicate key "${entry.key}"`, path: [index, 'key'] });
+    }
+    seen.add(entry.key);
+  });
 }
+
+const keyedList = (item) => z.array(item).min(1).superRefine(uniqueKeys);
 
 const ListsSchema = z.strictObject({
   documentTypes: keyedList(DocumentTypeSchema),
@@ -176,6 +175,86 @@ const RulesSchema = z.strictObject({
   })
 });
 
+// Fields: every field of each kind of record. `builtIn` holds the settings of
+// the fields in BUILT_IN_FIELDS (./fields.js), `custom` the tenant's own,
+// whose values records keep in `customFields`, keyed by field key
+// (src/tenant/fields.js).
+
+const CUSTOM_FIELD_TYPES = ['text', 'longText', 'number', 'date', 'boolean', 'select'];
+const CUSTOM_FIELD_KEY_PATTERN = /^[a-z][a-zA-Z0-9]{1,39}$/;
+const MAX_CUSTOM_FIELDS = 20;
+
+const customFieldKey = z
+  .string()
+  .regex(CUSTOM_FIELD_KEY_PATTERN, { error: 'Keys are camelCase letters and digits, e.g. insuranceExpiry' })
+  // Responses drop these names for roles without financials:view.
+  .refine((key) => !FINANCIAL_FIELDS.has(key), { error: 'This key is reserved' });
+
+const fieldLabel = z.string().trim().min(1).max(60);
+const fieldHelpText = z.string().trim().max(200).default('');
+
+const customFieldBase = {
+  key: customFieldKey,
+  label: fieldLabel,
+  /** Needed when a record is created, and can't be cleared afterwards. A required yes/no field must be ticked. */
+  required: z.boolean().default(false),
+  /** An inactive field is hidden from forms and views; records keep its values. */
+  active: z.boolean().default(true),
+  /** Also shown as a column in the section's list. */
+  showInList: z.boolean().default(false),
+  helpText: fieldHelpText
+};
+
+const CustomFieldSchema = z.discriminatedUnion('type', [
+  z.strictObject({ ...customFieldBase, type: z.literal('text'), maxLength: z.number().int().min(1).max(500).default(200) }),
+  z.strictObject({ ...customFieldBase, type: z.literal('longText'), maxLength: z.number().int().min(1).max(5000).default(2000) }),
+  z
+    .strictObject({ ...customFieldBase, type: z.literal('number'), min: z.number().nullable().default(null), max: z.number().nullable().default(null) })
+    .refine((field) => field.min === null || field.max === null || field.min <= field.max, { error: 'Must be at least the minimum', path: ['max'] }),
+  z.strictObject({ ...customFieldBase, type: z.literal('date') }),
+  z.strictObject({ ...customFieldBase, type: z.literal('boolean') }),
+  z.strictObject({ ...customFieldBase, type: z.literal('select'), options: keyedList(ListItemSchema).max(50) })
+]);
+
+/** A built-in field's settings. A core field can be renamed and given help text, nothing else. */
+function builtInFieldSchema(field) {
+  const always = (what) => z.literal(true, { error: `${field.label} is a core field, so it's always ${what}` }).default(true);
+  return z
+    .strictObject({
+      label: fieldLabel.default(field.label),
+      helpText: fieldHelpText,
+      active: field.core ? always('on') : z.boolean().default(true),
+      required: field.core ? always('required') : z.boolean().default(field.required ?? false),
+      showInList: field.core ? always('shown in lists') : z.boolean().default(field.showInList ?? false)
+    })
+    .prefault({});
+}
+
+function fieldSectionSchema(section) {
+  const builtInKeys = new Set(BUILT_IN_FIELDS[section].map((field) => field.key));
+  return z
+    .strictObject({
+      // Every built-in field is always listed; a missing one gets its defaults.
+      builtIn: z.strictObject(Object.fromEntries(BUILT_IN_FIELDS[section].map((field) => [field.key, builtInFieldSchema(field)]))).prefault({}),
+      custom: z
+        .array(CustomFieldSchema)
+        .max(MAX_CUSTOM_FIELDS)
+        .superRefine(uniqueKeys)
+        .superRefine((fields, ctx) =>
+          fields.forEach((field, index) => {
+            if (builtInKeys.has(field.key)) ctx.addIssue({ code: 'custom', message: `"${field.key}" is a built-in field`, path: [index, 'key'] });
+          })
+        )
+        .default([])
+    })
+    .prefault({});
+}
+
+const FieldsSchema = z.strictObject(Object.fromEntries(FIELD_SECTIONS.map((section) => [section, fieldSectionSchema(section)]))).prefault({});
+
+/** `fields` with every setting at its default. */
+const DEFAULT_FIELDS = FieldsSchema.parse(undefined);
+
 const LimitsSchema = z.strictObject({
   maxVehicles: z.number().int().min(1).max(10_000),
   maxUsers: z.number().int().min(1).max(1_000),
@@ -195,6 +274,7 @@ const TenantConfigSchema = z
     navigation: z.array(NavigationItemSchema).min(1),
     lists: ListsSchema,
     rules: RulesSchema,
+    fields: FieldsSchema,
     limits: LimitsSchema
   })
   .superRefine((config, ctx) => {
@@ -262,6 +342,16 @@ function parseTenantConfig(input) {
   };
 }
 
+/**
+ * A stored config with the defaults of sections added since it was published
+ * (e.g. `fields`), so readers can rely on every section being there.
+ * A config that no longer validates is returned as it is.
+ */
+function withConfigDefaults(config) {
+  const result = TenantConfigSchema.safeParse(config);
+  return result.success ? result.data : config;
+}
+
 /** JSON Schema of the config file, for editors (autocomplete and structural checks). */
 function getTenantConfigJsonSchema() {
   return z.toJSONSchema(TenantConfigSchema, { io: 'input', target: 'draft-7' });
@@ -271,7 +361,12 @@ module.exports = {
   CONFIG_SCHEMA_VERSION,
   RESIDENT_TYPES,
   LIST_KEY_PATTERN,
+  CUSTOM_FIELD_TYPES,
+  CUSTOM_FIELD_KEY_PATTERN,
+  DEFAULT_FIELDS,
+  MAX_CUSTOM_FIELDS,
   TenantConfigSchema,
   parseTenantConfig,
+  withConfigDefaults,
   getTenantConfigJsonSchema
 };

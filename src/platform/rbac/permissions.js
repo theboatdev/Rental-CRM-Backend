@@ -20,7 +20,7 @@ const PERMISSIONS = {
   'renters:documents:verify': { group: 'Renters', label: 'Verify identity documents', module: 'renters' },
 
   'rentals:read': { group: 'Rentals', label: 'View rentals and inspections', module: 'rentals' },
-  'rentals:create': { group: 'Rentals', label: 'Create rentals and reservations', module: 'rentals' },
+  'rentals:create': { group: 'Rentals', label: 'Create rentals and reservations, and edit their details', module: 'rentals' },
   'rentals:checkin': { group: 'Rentals', label: 'Hand over vehicles (pickup inspection)', module: 'rentals' },
   'rentals:return': { group: 'Rentals', label: 'Record returns (drop inspection)', module: 'rentals' },
   'rentals:cancel': { group: 'Rentals', label: 'Cancel reservations', module: 'rentals' },

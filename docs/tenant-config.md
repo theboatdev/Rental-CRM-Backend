@@ -41,6 +41,7 @@ How each app uses it:
 | `navigation` | Ordered `{ module, label }` for tab modules | Tabs of disabled modules are hidden, not removed |
 | `lists` | `documentTypes` (with `requiredFor: local/tourist`), `paymentMethods`, `costCategories`: each item is `{ key, label, active }` | See "List keys" |
 | `rules` | `defaultDepositAmount`, `minRentalDays`, `touristPermitDocumentKeys`, `codePrefixes` (`rental`, `booking`, `receipt`, `advance`, `renter`) | Prefixes produce codes like `RNT-2026-0042` |
+| `fields` | `vehicles`, `renters`, `rentals`, `payments`, `costs`: each `{ builtIn, custom }` | Every field of each record type. Optional; filled in with defaults. See "Fields" |
 | `limits` | `maxVehicles`, `maxUsers`, `storageGb` | Enforced by the API; usage is shown next to each limit |
 
 Module settings:
@@ -70,6 +71,92 @@ The schema rejects a config that is internally inconsistent:
 Tenant records store the list **key** (`BANK_TRANSFER`), never the label, so labels can change freely.
 
 Removing or renaming a key that published records use leaves those records pointing at nothing. Set `active: false` instead. The editor marks published keys with a lock, and the publish dialog warns when keys are removed (`removedListKeys`).
+
+## Fields
+
+`fields` lists every field of vehicles, renters, rentals, payments and costs, so the config shows exactly what the tenant app's forms, detail views and lists show. Each record type has two parts:
+
+- `builtIn`: settings for the fields the platform has, one entry per field.
+- `custom`: the tenant's own fields, such as an insurance expiry date on vehicles or a flight number on rentals.
+
+```json
+"fields": {
+  "vehicles": {
+    "builtIn": {
+      "year": { "label": "Year", "required": false },
+      "thumbnail": { "label": "Photo URL (https)", "active": false }
+    },
+    "custom": [
+      { "key": "insuranceExpiry", "label": "Insurance expiry", "type": "date", "required": true },
+      { "key": "colour", "label": "Colour", "type": "select", "showInList": true,
+        "options": [{ "key": "WHITE", "label": "White" }, { "key": "BLACK", "label": "Black" }] }
+    ]
+  }
+}
+```
+
+### Built-in fields
+
+The list of built-in fields, with their default labels and types, is `BUILT_IN_FIELDS` in `src/platform/config/fields.js`; `GET /api/platform/meta` serves it as `builtInFields`. Each entry in `builtIn` takes these settings, all optional:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `label` | The field's default label | Shown in forms, views and list headers |
+| `helpText` | `""` | Shown under the input |
+| `active` | `true` | Off: the field disappears from forms, views and lists, and the API ignores values for it. Records keep what they have |
+| `required` | Varies, e.g. `true` for a vehicle's year | Needed when a record is created, and can't be cleared afterwards |
+| `showInList` | Matches the lists before fields were configurable | Shown in the record type's list |
+
+A field left out of `builtIn` gets its defaults. So "removing" a built-in field means turning it off with `active: false`.
+
+**Core fields** are ones the rules depend on, such as a vehicle's plate and daily rate, a renter's name, phone and documents, a rental's vehicle, renter and dates, and a payment's or cost's amount. They can be renamed and given help text, but `active`, `required` and `showInList` must stay `true`.
+
+What happens when some fields are off:
+
+- A vehicle without a year is fine; transmission and fuel default to automatic and petrol; the deposit defaults to `rules.defaultDepositAmount`.
+- With the renter type off, every renter is a resident.
+- With a booking's rate or deposit off, the booking takes the vehicle's. The rental still shows both, since they're part of what's owed.
+- With a cost's date off, costs are dated the day they're logged.
+- The second-currency rate is only used when `locale.secondaryCurrency` is set.
+
+A booking's advance follows the payment fields: a required transaction reference is also required for the advance.
+
+In the tenant app, built-in fields keep their place in each form. Custom fields follow them, in config order.
+
+### Custom fields
+
+Every custom field has these settings:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `key` | | camelCase letters and digits, e.g. `insuranceExpiry`. Records store values in their `customFields` object under it. It can't be a built-in field's key, and the profit and margin names (`profit`, `revenue`, …) are reserved |
+| `label` | | Shown in forms, views and list headers |
+| `type` | | `text`, `longText`, `number`, `date`, `boolean` (yes/no) or `select` (a choice list) |
+| `required` | `false` | Needed when a record is created, and can't be cleared afterwards. A required yes/no field must be ticked |
+| `active` | `true` | Off: the field is hidden and the API ignores values for it; records keep what they have |
+| `showInList` | `false` | Also a column in the section's list |
+| `helpText` | `""` | Shown under the input |
+
+Some types have settings of their own, and settings of another type are rejected:
+
+| Type | Settings | Values stored |
+|---|---|---|
+| `text`, `longText` | `maxLength` (defaults: 200, 2,000) | Strings |
+| `number` | `min`, `max` (default `null`, no limit) | Numbers |
+| `date` | | `YYYY-MM-DD` strings |
+| `boolean` | | `true` or `false` |
+| `select` | `options`: list items (`{ key, label, active }`, at least one) | The option key |
+
+The rules:
+
+- **At most 20 custom fields per record type**, with unique keys.
+- **The backend validates values** against the active config (`src/tenant/fields.js`). It rejects keys that aren't fields of the record type, values of the wrong type, and inactive options.
+- **Edits merge.** An edit changes only the fields it sends; `null` or `""` clears a field. So a field that became required later doesn't block edits to older records.
+- **Where they can be edited.** Vehicles and renters through their usual edits. Rentals through `PATCH /api/v1/rentals/:id`, which also edits the notes (permission `rentals:create`). Payments and costs only take values when they're recorded, like the rest of those entries. A booking's advance takes the payment fields under `advance.customFields`.
+
+Records keep their values by key, so the same caution as list keys applies. Deactivate a field or an option instead of removing it, and add a new field rather than changing a field's type. The editor locks published keys, and the publish dialog warns about removed fields, type changes and removed options (`customFieldChanges`).
+
+Configs published before fields were configurable have no `fields`. The backend adds the defaults when it reads them (`withConfigDefaults`), so readers can rely on the section being there.
 
 ## What does not belong in config
 

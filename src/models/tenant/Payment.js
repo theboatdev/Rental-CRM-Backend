@@ -17,7 +17,8 @@ const paymentSchema = new Schema(
     voidedAt: { type: Date },
     voidedBy: { type: actorSchema },
     voidReason: { type: String },
-    notes: { type: String }
+    notes: { type: String },
+    customFields: { type: Schema.Types.Mixed } // values of the config's customFields, by field key
   },
   { collection: 'payments', timestamps: true }
 );

@@ -1,7 +1,7 @@
 const { isObjectIdOrHexString } = require('mongoose');
-const { parseTenantConfig } = require('./config/schema');
+const { parseTenantConfig, withConfigDefaults } = require('./config/schema');
 const { CONFIG_TEMPLATES } = require('./config/templates');
-const { diffConfigs, removedListKeys } = require('./config/diff');
+const { diffConfigs, removedListKeys, customFieldChanges } = require('./config/diff');
 const {
   TENANT_STATUSES,
   TENANT_STATUS_TRANSITIONS,
@@ -67,7 +67,7 @@ function presentJob(job) {
 const presentConfigVersion = (v) => ({
   tenantId: String(v.tenantId),
   version: v.version,
-  config: v.config,
+  config: withConfigDefaults(v.config),
   note: v.note,
   createdBy: actorOf(v.createdBy),
   createdAt: iso(v.createdAt)
@@ -297,8 +297,9 @@ function createPlatformService({ platformDb, getTenantDb, clerk }) {
     async listConfigVersions(tenantId) {
       const tenant = await requireTenant(tenantId);
       const versions = await TenantConfig.find({ tenantId: tenant._id }).sort({ version: 1 }).lean();
-      return versions
-        .map((v, index) => ({ ...presentConfigVersion(v), changes: index > 0 ? diffConfigs(versions[index - 1].config, v.config) : [] }))
+      const presented = versions.map(presentConfigVersion);
+      return presented
+        .map((v, index) => ({ ...v, changes: index > 0 ? diffConfigs(presented[index - 1].config, v.config) : [] }))
         .reverse();
     },
 
@@ -389,18 +390,23 @@ function createPlatformService({ platformDb, getTenantDb, clerk }) {
   return service;
 }
 
-/** Stateless validation: schema issues, plus changes and removed list keys against an optional baseline. */
+/**
+ * Stateless validation: schema issues, plus against an optional baseline the
+ * changes, and the removed list keys and custom field changes that affect
+ * existing records.
+ */
 function validateConfig(config, baseline) {
   const result = parseTenantConfig(config);
   if (!result.success) {
-    return { valid: false, issues: result.issues, changes: baseline ? diffConfigs(baseline, config) : [], removedListKeys: [] };
+    return { valid: false, issues: result.issues, changes: baseline ? diffConfigs(baseline, config) : [], removedListKeys: [], customFieldChanges: [] };
   }
   return {
     valid: true,
     issues: [],
     config: result.data,
     changes: baseline ? diffConfigs(baseline, result.data) : [],
-    removedListKeys: baseline ? removedListKeys(baseline, result.data) : []
+    removedListKeys: baseline ? removedListKeys(baseline, result.data) : [],
+    customFieldChanges: baseline ? customFieldChanges(baseline, result.data) : []
   };
 }
 

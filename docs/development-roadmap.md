@@ -115,8 +115,14 @@ Exit (met in tests with the fake Clerk; run it against your Clerk instance with 
 - **Tenant users from the admin dashboard.** A **Users** page per tenant, on `/api/platform/tenants/:id/{members,invitations,roles}` (`src/platform/tenantUsers.js`). Super admins invite users with any role, change roles and remove people, with the same rules as the tenant app's Team page.
 - **Tenant deletion from the admin dashboard.** Permanent, for archived or failed-provisioning tenants, after typing the slug. It deletes the Clerk organization, the tenant database, configs, the job and secrets, and keeps the audit history. Removing a user stays "remove from tenant": their Clerk account is kept.
 - **Members without waiting for the webhook.** `loadMember` creates a missing member from their Clerk membership (`members.syncFromClerk`), with the webhook's rules. New members can sign in straight after accepting, even without a webhook tunnel.
+- **Configurable fields.** The config's `fields` section lists every field of vehicles, renters, rentals, payments and costs. See [tenant-config.md](tenant-config.md#fields).
+  - Built-in fields can be renamed, given help text, made required, shown in lists or turned off. Core fields, the ones the rules depend on, stay on.
+  - Tenants add their own fields: text, long text, number, date, yes/no or a choice list.
+  - Backend: the built-in field catalog (`src/platform/config/fields.js`), the schema, the rules applied to every create and edit (`src/tenant/fields.js`), merge-style edits of custom values, `PATCH /rentals/:id`, and publish warnings for removed custom fields, type changes and removed options.
+  - Admin dashboard: a **Fields** tab in the config editor.
+  - Tenant app: forms, detail views and lists follow the settings.
 - **Cleanup.** Removed the Vite leftovers, `context/StoreContext.jsx` and `lib/bookings.mjs` (its tests moved to the backend).
-- **Tests.** `test/operations.test.js` covers vehicles, renters, the booking rules (overlaps, back-to-back, concurrent bookings, check-in, return, cancel, overdue), payments, costs and fuel, the dashboard and digest with field filtering, and isolation. `test/tenant-users.test.js` and `test/tenant-deletion.test.js` cover the super admin's user management and tenant deletion. The tenant app is checked with `typecheck`, `lint` and `build`. 156 backend tests in all.
+- **Tests.** `test/operations.test.js` covers vehicles, renters, the booking rules (overlaps, back-to-back, concurrent bookings, check-in, return, cancel, overdue), payments, costs and fuel, the dashboard and digest with field filtering, and isolation. `test/tenant-users.test.js` and `test/tenant-deletion.test.js` cover the super admin's user management and tenant deletion. Fields are covered in `test/config.test.js` and `test/operations.test.js`. The tenant app is checked with `typecheck`, `lint` and `build`. 174 backend tests in all.
 
 Moved to Phase 5, because they need file storage or a scheduler:
 - photos for each inspection point;

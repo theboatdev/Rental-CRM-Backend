@@ -13,7 +13,8 @@ const vehicleCostSchema = new Schema(
     billFileKey: { type: String }, // S3 object key; required when modules.costs.requireBillUpload
     odometer: { type: Number },
     createdBy: { type: actorSchema },
-    notes: { type: String }
+    notes: { type: String },
+    customFields: { type: Schema.Types.Mixed } // values of the config's customFields, by field key
   },
   { collection: 'costs', timestamps: true }
 );

@@ -248,6 +248,7 @@ Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) c
 | `POST /renters/:id/documents/:documentId/verify` | `renters:documents:verify` | Mark a document checked |
 | `GET /rentals?status&vehicleId&renterId` · `GET /rentals/:id` | `rentals:read` | Rentals, newest first · one with its payments |
 | `POST /rentals` | `rentals:create` | Book (`advance` needs `payments:record`; `pickup` hands over at once and needs `rentals:checkin`) |
+| `PATCH /rentals/:id` | `rentals:create` | Edit a rental's notes and custom fields |
 | `POST /rentals/:id/check-in` · `/return` · `/cancel` | `rentals:checkin` · `rentals:return` · `rentals:cancel` | Hand over, record the return, cancel a booking |
 | `GET /calendar?month=YYYY-MM` | `calendar:view` | A month of the fleet schedule |
 | `GET /payments` · `POST /payments` · `POST /payments/:id/void` | `payments:read` · `payments:record` · `payments:void` | The ledger · record · void with a reason |

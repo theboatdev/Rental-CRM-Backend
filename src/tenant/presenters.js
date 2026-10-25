@@ -2,7 +2,9 @@ const { iso, dateString, todayIn } = require('./common');
 
 /**
  * Response shapes for the tenant operations. Ids are strings, timestamps ISO
- * strings, calendar dates YYYY-MM-DD. The tenant app's `contract.ts` mirrors these.
+ * strings, calendar dates YYYY-MM-DD. `customFields` holds the values of the
+ * config's custom fields by key (see fields.js). The tenant app's
+ * `contract.ts` mirrors these.
  */
 
 const idOf = (value) => (value?._id ? String(value._id) : value ? String(value) : null);
@@ -15,7 +17,7 @@ const presentVehicle = (v) => ({
   plateNumber: v.plateNumber,
   make: v.make,
   model: v.model,
-  year: v.year,
+  year: v.year ?? null,
   transmission: v.transmission,
   fuelType: v.fuelType,
   dailyRate: v.dailyRate,
@@ -25,6 +27,7 @@ const presentVehicle = (v) => ({
   status: v.status,
   thumbnail: v.thumbnail ?? null,
   notes: v.notes ?? '',
+  customFields: v.customFields ?? {},
   createdAt: iso(v.createdAt),
   updatedAt: iso(v.updatedAt)
 });
@@ -69,6 +72,7 @@ const presentRenter = (r, config, rentalsCount = 0) => ({
   compliance: complianceOf(r, config),
   source: r.source,
   notes: r.notes ?? '',
+  customFields: r.customFields ?? {},
   rentalsCount,
   createdAt: iso(r.createdAt)
 });
@@ -108,6 +112,7 @@ function presentRental(r, { timezone }) {
     cancelledAt: iso(r.cancelledAt),
     createdBy: r.createdBy ?? null,
     notes: r.notes ?? '',
+    customFields: r.customFields ?? {},
     createdAt: iso(r.createdAt)
   };
 }
@@ -124,6 +129,7 @@ const presentPayment = (p) => ({
   receivedBy: p.receivedBy ?? null,
   transactionReference: p.transactionReference ?? null,
   notes: p.notes ?? '',
+  customFields: p.customFields ?? {},
   voided: Boolean(p.voidedAt),
   voidedAt: iso(p.voidedAt),
   voidedBy: p.voidedBy ?? null,
@@ -142,6 +148,7 @@ const presentCost = (c) => ({
   odometer: c.odometer ?? null,
   createdBy: c.createdBy ?? null,
   notes: c.notes ?? '',
+  customFields: c.customFields ?? {},
   createdAt: iso(c.createdAt)
 });
 

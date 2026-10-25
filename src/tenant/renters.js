@@ -4,6 +4,7 @@ const { forbidden, notFound } = require('../platform/errors');
 const { parse, findOr404, nextCode, IdSchema, activeListKey, can, moduleOn } = require('./common');
 const { presentRenter, presentRental } = require('./presenters');
 const { recordAudit } = require('./audit');
+const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields } = require('./fields');
 
 const DocumentInputSchema = (config) =>
   z.strictObject({
@@ -35,10 +36,12 @@ const RenterInputSchema = (config) =>
     address: RENTER_FIELDS.address.optional(),
     emergencyContact: RENTER_FIELDS.emergencyContact.optional(),
     notes: RENTER_FIELDS.notes.default(''),
-    documents: z.array(DocumentInputSchema(config)).max(10).default([])
+    documents: z.array(DocumentInputSchema(config)).max(10).default([]),
+    customFields: customFieldsInput(config, 'renters')
   });
 
-const RenterUpdateSchema = z.strictObject(RENTER_FIELDS).partial();
+const RenterUpdateSchema = (config) =>
+  z.strictObject(RENTER_FIELDS).partial().extend({ customFields: customFieldsInput(config, 'renters', { update: true }) });
 
 /** Rentals that count towards a renter's history (not reservations or cancellations). */
 const COUNTED = { status: { $in: ['ACTIVE', 'COMPLETED'] } };
@@ -83,7 +86,7 @@ function createRenters() {
 
     /** Gives the profile the next code with the `rules.codePrefixes.renter` prefix, e.g. SR-0146. */
     async createRenter(ctx, input, { source = 'COUNTER', session } = {}) {
-      const data = parse(RenterInputSchema(ctx.config), input);
+      const data = parseRecord(RenterInputSchema(ctx.config), input, ctx.config, 'renters');
       assertCanVerify(ctx, data.documents);
       const profileId = await nextCode(ctx, { prefix: ctx.config.rules.codePrefixes.renter, sequence: 'renter', session });
       const [renter] = await ctx.models.Renter.create(
@@ -96,9 +99,10 @@ function createRenters() {
 
     async updateRenter(ctx, renterId, input) {
       const renter = await findOr404(ctx.models.Renter, renterId, 'Renter');
-      const changes = parse(RenterUpdateSchema, input);
-      const updated = await ctx.models.Renter.findOneAndUpdate({ _id: renter._id }, { $set: changes }, { returnDocument: 'after' }).lean();
-      await recordAudit(ctx, { action: 'renter.updated', entityType: 'renter', entityId: String(renter._id), summary: `Updated ${renter.fullName}: ${Object.keys(changes).join(', ')}` });
+      const { customFields, ...changes } = parseRecord(RenterUpdateSchema(ctx.config), input, ctx.config, 'renters', { update: true });
+      const updated = await ctx.models.Renter.findOneAndUpdate({ _id: renter._id }, updateWithCustomFields(changes, customFields), { returnDocument: 'after' }).lean();
+      const fields = [...Object.keys(changes), ...changedCustomFields(renter, customFields)];
+      await recordAudit(ctx, { action: 'renter.updated', entityType: 'renter', entityId: String(renter._id), summary: `Updated ${renter.fullName}: ${fields.join(', ')}` });
       return presentRenter(updated, ctx.config);
     },
 

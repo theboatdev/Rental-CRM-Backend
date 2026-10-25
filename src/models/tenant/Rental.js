@@ -37,7 +37,8 @@ const rentalSchema = new Schema(
     dropInspection: { type: inspectionSchema },
     cancelledAt: { type: Date },
     createdBy: { type: actorSchema },
-    notes: { type: String }
+    notes: { type: String },
+    customFields: { type: Schema.Types.Mixed } // values of the config's customFields, by field key
   },
   { collection: 'rentals', timestamps: true }
 );

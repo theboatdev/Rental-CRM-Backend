@@ -2,10 +2,11 @@ const { z } = require('zod');
 const { TRANSMISSIONS, FUEL_TYPES } = require('../models/tenant/enums');
 const { conflict } = require('../platform/errors');
 const { refreshVehicleUsage } = require('../platform/usage');
-const { parse, findOr404, can, moduleOn } = require('./common');
+const { findOr404, can, moduleOn } = require('./common');
 const { presentVehicle, presentRental, presentCost, presentFuelLog } = require('./presenters');
 const { vehicleTotals, presentTotals } = require('./metrics');
 const { recordAudit } = require('./audit');
+const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields } = require('./fields');
 
 const VEHICLE_FIELDS = {
   plateNumber: z.string().trim().min(2).max(20).transform((plate) => plate.toUpperCase()),
@@ -22,19 +23,27 @@ const VEHICLE_FIELDS = {
   notes: z.string().trim().max(1000)
 };
 
-const VehicleInputSchema = z.strictObject({
-  ...VEHICLE_FIELDS,
-  transmission: VEHICLE_FIELDS.transmission.default('AUTOMATIC'),
-  fuelType: VEHICLE_FIELDS.fuelType.default('PETROL'),
-  secondaryDailyRate: VEHICLE_FIELDS.secondaryDailyRate.optional(),
-  depositAmount: VEHICLE_FIELDS.depositAmount.optional(),
-  mileage: VEHICLE_FIELDS.mileage.default(0),
-  thumbnail: VEHICLE_FIELDS.thumbnail.optional(),
-  notes: VEHICLE_FIELDS.notes.default('')
-});
+const VehicleInputSchema = (config) =>
+  z.strictObject({
+    ...VEHICLE_FIELDS,
+    // Whether the fields that aren't core are needed comes from the config (see fields.js).
+    year: VEHICLE_FIELDS.year.optional(),
+    transmission: VEHICLE_FIELDS.transmission.default('AUTOMATIC'),
+    fuelType: VEHICLE_FIELDS.fuelType.default('PETROL'),
+    secondaryDailyRate: VEHICLE_FIELDS.secondaryDailyRate.optional(),
+    depositAmount: VEHICLE_FIELDS.depositAmount.optional(),
+    mileage: VEHICLE_FIELDS.mileage.default(0),
+    thumbnail: VEHICLE_FIELDS.thumbnail.optional(),
+    notes: VEHICLE_FIELDS.notes.default(''),
+    customFields: customFieldsInput(config, 'vehicles')
+  });
 
 /** RENTED is set by check-in and cleared by a return, never by hand. */
-const VehicleUpdateSchema = z.strictObject({ ...VEHICLE_FIELDS, status: z.enum(['AVAILABLE', 'MAINTENANCE']) }).partial();
+const VehicleUpdateSchema = (config) =>
+  z
+    .strictObject({ ...VEHICLE_FIELDS, status: z.enum(['AVAILABLE', 'MAINTENANCE']) })
+    .partial()
+    .extend({ customFields: customFieldsInput(config, 'vehicles', { update: true }) });
 
 /**
  * The fleet: vehicle records, their status between rentals, and each
@@ -76,7 +85,7 @@ function createVehicles({ platformDb }) {
 
     /** Refused at the plan's `limits.maxVehicles`. The deposit defaults to `rules.defaultDepositAmount`. */
     async createVehicle(ctx, input) {
-      const data = parse(VehicleInputSchema, input);
+      const data = parseRecord(VehicleInputSchema(ctx.config), input, ctx.config, 'vehicles');
       const { Vehicle } = ctx.models;
       const { maxVehicles } = ctx.config.limits;
       if ((await Vehicle.countDocuments()) >= maxVehicles) {
@@ -98,7 +107,7 @@ function createVehicles({ platformDb }) {
 
     async updateVehicle(ctx, vehicleId, input) {
       const vehicle = await findOr404(ctx.models.Vehicle, vehicleId, 'Vehicle');
-      const changes = parse(VehicleUpdateSchema, input);
+      const { customFields, ...changes } = parseRecord(VehicleUpdateSchema(ctx.config), input, ctx.config, 'vehicles', { update: true });
       if (changes.status && vehicle.status === 'RENTED') throw conflict("A rented vehicle's status changes when it's returned");
       if (changes.plateNumber && changes.plateNumber !== vehicle.plateNumber && (await ctx.models.Vehicle.exists({ plateNumber: changes.plateNumber }))) {
         throw plateTaken(changes.plateNumber);
@@ -106,9 +115,12 @@ function createVehicles({ platformDb }) {
 
       // A status change only applies if a check-in didn't rent the vehicle out in the meantime.
       const filter = changes.status ? { _id: vehicle._id, status: { $ne: 'RENTED' } } : { _id: vehicle._id };
-      const updated = await ctx.models.Vehicle.findOneAndUpdate(filter, { $set: changes }, { returnDocument: 'after' }).lean();
+      const updated = await ctx.models.Vehicle.findOneAndUpdate(filter, updateWithCustomFields(changes, customFields), { returnDocument: 'after' }).lean();
       if (!updated) throw conflict('The vehicle was rented out in the meantime. Reload and try again.');
-      const fields = Object.keys(changes).filter((key) => String(changes[key]) !== String(vehicle[key]));
+      const fields = [
+        ...Object.keys(changes).filter((key) => String(changes[key]) !== String(vehicle[key])),
+        ...changedCustomFields(vehicle, customFields)
+      ];
       if (fields.length) {
         await recordAudit(ctx, { action: 'vehicle.updated', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Updated ${updated.plateNumber}: ${fields.join(', ')}` });
       }
