@@ -21,6 +21,8 @@ npm test                  # Node's built-in test runner; MongoDB runs in memory
 
 - Without Clerk keys, `/api/platform` and `/api/v1` respond 503 and say why.
 - Without `MONGODB_URI`, or while the database is unreachable, `/api/v1` and most of `/api/platform` respond 503. `/api/platform/meta` and `/config/validate` don't need it.
+  - The server keeps retrying the connection every 15 seconds and logs why.
+  - With Atlas, the usual cause is that your current IP isn't on the cluster's IP access list (Security → Network Access). Home IPs change, so this can start failing overnight.
 - Without `CLERK_WEBHOOK_SIGNING_SECRET`, `/webhooks/clerk` responds 503 and members aren't synced from Clerk.
 
 Creating a tenant from the admin dashboard provisions it for real: it creates a Clerk organization, a `tenant_<id>` database and config v1, and emails the admin an invitation. To walk through it, and to call `/api/v1` as that tenant's admin, see [clerk-setup.md](docs/clerk-setup.md#7-create-a-tenant-and-call-its-api). `npm run seed` adds you as a member when webhooks can't reach your machine.

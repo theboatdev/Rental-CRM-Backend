@@ -5,7 +5,7 @@ dotenv.config();
 const { createApp } = require('./app');
 const { createPlatformAuth } = require('./middleware/platformAuth');
 const { createTenantAuth } = require('./middleware/tenantAuth');
-const { connectPlatformDb, syncPlatformIndexes } = require('./db/platform');
+const { connectPlatformDb, waitForConnection, syncPlatformIndexes } = require('./db/platform');
 const { createClerkGateway } = require('./platform/clerk');
 
 const PORT = process.env.PORT || 5000;
@@ -26,9 +26,12 @@ if (!process.env.CLERK_WEBHOOK_SIGNING_SECRET) {
 // The server starts without a database; the routes that need it respond 503 until it's reachable.
 let platformDb = null;
 if (process.env.MONGODB_URI) {
-  platformDb = connectPlatformDb({ uri: process.env.MONGODB_URI, dbName: process.env.PLATFORM_DB_NAME || 'platform' });
-  platformDb
-    .asPromise()
+  const database = { uri: process.env.MONGODB_URI, dbName: process.env.PLATFORM_DB_NAME || 'platform' };
+  platformDb = connectPlatformDb(database);
+  waitForConnection(platformDb, {
+    ...database,
+    onRetry: (error) => console.error(`[db] Platform database unavailable: ${error.message.split('\n')[0]} Retrying in 15 s.`)
+  })
     .then(() => syncPlatformIndexes(platformDb))
     .then(() => console.log(`[db] Connected to the platform database "${platformDb.name}"`))
     .catch((error) => console.error(`[db] Platform database unavailable: ${error.message}`));
