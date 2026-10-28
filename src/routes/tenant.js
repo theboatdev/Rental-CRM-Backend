@@ -13,6 +13,7 @@ const { createTeam } = require('../tenant/team');
 const { createRoles } = require('../tenant/roles');
 const { listAudit } = require('../tenant/audit');
 const { contextOf } = require('../tenant/context');
+const { createStorageGateway } = require('../platform/storage');
 const { registerOperationRoutes } = require('./operations');
 
 /** Routes every member may call, so they have no permission check. Every other tenant route must have one (see test/team.test.js). */
@@ -26,9 +27,11 @@ const OPEN_ROUTES = ['/me', '/config'];
  *
  * `directory` finds a tenant by Clerk organization (the platform service);
  * `clerk` is the Clerk gateway, for invitations and memberships;
- * `memberSync`, when given, creates a missing member from their Clerk membership.
+ * `memberSync`, when given, creates a missing member from their Clerk membership;
+ * `storage` is the file storage gateway (src/platform/storage.js), reached as `ctx.storage`;
+ * `digests` sends the WhatsApp digest (src/platform/digests.js).
  */
-function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, clerk, memberSync, cacheTtlMs }) {
+function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, clerk, memberSync, storage = createStorageGateway({}), digests, cacheTtlMs }) {
   const team = createTeam({ clerk, platformDb });
   const roles = createRoles({ clerk });
   const router = express.Router();
@@ -37,7 +40,11 @@ function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, cl
     requireDatabase(platformDb),
     resolveTenant({ directory, getTenantDb, cacheTtlMs }),
     createLoadMember({ syncMember: memberSync && ((req) => memberSync.syncFromClerk({ orgId: req.identity.orgId, userId: req.identity.userId })) }),
-    hideFinancialFields
+    hideFinancialFields,
+    (req, res, next) => {
+      req.storage = storage;
+      next();
+    }
   );
 
   /** Who the caller is in this tenant, and what they may do. The tenant app hides what isn't in `permissions`. */
@@ -93,7 +100,7 @@ function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, cl
     )
   );
 
-  registerOperationRoutes(router, { platformDb });
+  registerOperationRoutes(router, { platformDb, digests });
 
   return router;
 }

@@ -1,5 +1,5 @@
 const { handle } = require('./handle');
-const { requireModule, requirePermission } = require('../middleware/tenantContext');
+const { requireModule, requirePermission, requireAnyPermission } = require('../middleware/tenantContext');
 const { contextOf } = require('../tenant/context');
 const { createVehicles } = require('../tenant/vehicles');
 const { createRenters } = require('../tenant/renters');
@@ -7,19 +7,27 @@ const { createRentals } = require('../tenant/rentals');
 const { createPayments } = require('../tenant/payments');
 const { createCosts } = require('../tenant/costs');
 const { createDashboard } = require('../tenant/dashboard');
+const { createUploads, UPLOAD_PERMISSIONS } = require('../tenant/files');
 
 /** `requireModule` then `requirePermission`, so a disabled module is a 404 before permissions are checked. */
 const guard = (moduleKey, permission) => [requireModule(moduleKey), requirePermission(permission)];
 
-/** The day-to-day operations routes of the tenant API, registered on its router (after the tenant chain). */
-function registerOperationRoutes(router, { platformDb }) {
+/**
+ * The day-to-day operations routes of the tenant API, registered on its
+ * router (after the tenant chain). `digests` sends the WhatsApp digest (src/platform/digests.js).
+ */
+function registerOperationRoutes(router, { platformDb, digests }) {
   const vehicles = createVehicles({ platformDb });
-  const renters = createRenters();
-  const rentals = createRentals();
+  const renters = createRenters({ platformDb });
+  const rentals = createRentals({ platformDb });
   const payments = createPayments();
-  const costs = createCosts();
+  const costs = createCosts({ platformDb });
   const dashboard = createDashboard();
+  const uploads = createUploads({ platformDb });
   const query = (req) => req.query;
+
+  // Signs a browser upload to Cloudinary. Each kind checks its own module and permissions (files.js).
+  router.post('/uploads', requireAnyPermission(...UPLOAD_PERMISSIONS), handle((req) => uploads.signUpload(contextOf(req), req.body), 201));
 
   router.get('/dashboard', guard('dashboard', 'dashboard:view'), handle((req) => dashboard.dashboard(contextOf(req), query(req))));
 
@@ -36,6 +44,11 @@ function registerOperationRoutes(router, { platformDb }) {
   router.post('/renters', guard('renters', 'renters:create'), handle((req) => renters.createRenter(contextOf(req), req.body), 201));
   router.patch('/renters/:id', guard('renters', 'renters:update'), handle((req) => renters.updateRenter(contextOf(req), req.params.id, req.body)));
   router.post('/renters/:id/documents', guard('renters', 'renters:update'), handle((req) => renters.addDocument(contextOf(req), req.params.id, req.body), 201));
+  router.put(
+    '/renters/:id/documents/:documentId/file',
+    guard('renters', 'renters:update'),
+    handle((req) => renters.attachDocumentFile(contextOf(req), req.params.id, req.params.documentId, req.body))
+  );
   router.post(
     '/renters/:id/documents/:documentId/verify',
     guard('renters', 'renters:documents:verify'),
@@ -58,12 +71,21 @@ function registerOperationRoutes(router, { platformDb }) {
 
   router.get('/costs', guard('costs', 'costs:read'), handle((req) => costs.listCosts(contextOf(req), query(req))));
   router.post('/costs', guard('costs', 'costs:create'), handle((req) => costs.createCost(contextOf(req), req.body), 201));
+  router.put('/costs/:id/bill', guard('costs', 'costs:create'), handle((req) => costs.attachBill(contextOf(req), req.params.id, req.body)));
   router.delete('/costs/:id', guard('costs', 'costs:delete'), handle((req) => costs.deleteCost(contextOf(req), req.params.id)));
 
   router.get('/fuel-logs', guard('fuelLogs', 'fuel:read'), handle((req) => costs.listFuelLogs(contextOf(req), query(req))));
   router.post('/fuel-logs', guard('fuelLogs', 'fuel:create'), handle((req) => costs.createFuelLog(contextOf(req), req.body), 201));
 
-  router.get('/whatsapp/digest', guard('whatsappDigest', 'whatsapp:view'), handle((req) => dashboard.whatsappDigest(contextOf(req))));
+  router.get(
+    '/whatsapp/digest',
+    guard('whatsappDigest', 'whatsapp:view'),
+    handle(async (req) => {
+      const ctx = contextOf(req);
+      return { ...(await dashboard.whatsappDigest(ctx)), delivery: digests ? await digests.deliveryOf(ctx.tenantId) : null };
+    })
+  );
+  router.post('/whatsapp/digest/send', guard('whatsappDigest', 'whatsapp:manage'), handle((req) => digests.sendNow(contextOf(req)), 201));
 }
 
 module.exports = { registerOperationRoutes };

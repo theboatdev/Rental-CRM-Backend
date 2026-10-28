@@ -1,12 +1,13 @@
 const { Schema } = require('mongoose');
 const actorSchema = require('../actor');
+const fileSchema = require('./file');
 const { SOURCES } = require('./enums');
 const { RESIDENT_TYPES } = require('../../platform/config/schema');
 
 const renterDocumentSchema = new Schema({
   type: { type: String, required: true }, // lists.documentTypes key, e.g. NIC
   number: { type: String, trim: true },
-  fileKey: { type: String }, // S3 object key under tenants/<tenantId>/
+  file: { type: fileSchema }, // the scan, in Cloudinary under tenants/<tenantId>/documents/
   verified: { type: Boolean, default: false },
   verifiedBy: { type: actorSchema },
   verifiedAt: { type: Date },

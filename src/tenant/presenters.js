@@ -1,9 +1,11 @@
 const { iso, dateString, todayIn } = require('./common');
+const { fileView } = require('./files');
 
 /**
  * Response shapes for the tenant operations. Ids are strings, timestamps ISO
  * strings, calendar dates YYYY-MM-DD. `customFields` holds the values of the
- * config's custom fields by key (see fields.js). The tenant app's
+ * config's custom fields by key (see fields.js). Files are `fileView`s, with
+ * a short-lived link for callers who may read the record. The tenant app's
  * `contract.ts` mirrors these.
  */
 
@@ -48,17 +50,18 @@ function complianceOf(renter, config) {
   return { ok: missingDocuments.length === 0 && !needsPermit, missingDocuments, needsPermit, unverified };
 }
 
-const presentDocument = (d) => ({
+const presentDocument = (d, ctx) => ({
   id: String(d._id),
   type: d.type,
   number: d.number ?? null,
+  file: fileView(ctx, d.file, 'renters:read'),
   verified: d.verified,
   verifiedBy: d.verifiedBy ?? null,
   verifiedAt: iso(d.verifiedAt),
   uploadedAt: iso(d.uploadedAt)
 });
 
-const presentRenter = (r, config, rentalsCount = 0) => ({
+const presentRenter = (r, ctx, rentalsCount = 0) => ({
   id: String(r._id),
   profileId: r.profileId,
   fullName: r.fullName,
@@ -68,8 +71,8 @@ const presentRenter = (r, config, rentalsCount = 0) => ({
   country: r.country ?? null,
   address: r.address ?? null,
   emergencyContact: r.emergencyContact?.name ? { name: r.emergencyContact.name, phone: r.emergencyContact.phone ?? null, relation: r.emergencyContact.relation ?? null } : null,
-  documents: r.documents.map(presentDocument),
-  compliance: complianceOf(r, config),
+  documents: r.documents.map((d) => presentDocument(d, ctx)),
+  compliance: complianceOf(r, ctx.config),
   source: r.source,
   notes: r.notes ?? '',
   customFields: r.customFields ?? {},
@@ -77,12 +80,22 @@ const presentRenter = (r, config, rentalsCount = 0) => ({
   createdAt: iso(r.createdAt)
 });
 
-const presentInspection = (i) =>
-  i ? { at: iso(i.at), by: i.by ?? null, odometer: i.odometer ?? null, points: (i.photos ?? []).map((p) => p.point), notes: i.notes ?? '' } : null;
+/** `points` are the checked inspection points; `photos` the ones with a photo. */
+const presentInspection = (i, ctx) =>
+  i
+    ? {
+        at: iso(i.at),
+        by: i.by ?? null,
+        odometer: i.odometer ?? null,
+        points: (i.photos ?? []).map((p) => p.point),
+        photos: (i.photos ?? []).filter((p) => p.file?.publicId).map((p) => ({ point: p.point, file: fileView(ctx, p.file, 'rentals:read') })),
+        notes: i.notes ?? ''
+      }
+    : null;
 
 /** `today` (the tenant's date) decides whether an active rental is overdue. */
-function presentRental(r, { timezone }) {
-  const today = todayIn(timezone);
+function presentRental(r, ctx) {
+  const today = todayIn(ctx.timezone);
   const endDate = dateString(r.endDate);
   return {
     id: String(r._id),
@@ -107,8 +120,8 @@ function presentRental(r, { timezone }) {
     startMileage: r.startMileage ?? null,
     endMileage: r.endMileage ?? null,
     distance: r.endMileage != null && r.startMileage != null ? r.endMileage - r.startMileage : null,
-    pickupInspection: presentInspection(r.pickupInspection),
-    dropInspection: presentInspection(r.dropInspection),
+    pickupInspection: presentInspection(r.pickupInspection, ctx),
+    dropInspection: presentInspection(r.dropInspection, ctx),
     cancelledAt: iso(r.cancelledAt),
     createdBy: r.createdBy ?? null,
     notes: r.notes ?? '',
@@ -136,7 +149,7 @@ const presentPayment = (p) => ({
   voidReason: p.voidReason ?? null
 });
 
-const presentCost = (c) => ({
+const presentCost = (c, ctx) => ({
   id: String(c._id),
   vehicle: vehicleRef(c.vehicle) ?? { id: idOf(c.vehicle) },
   category: c.category,
@@ -145,6 +158,7 @@ const presentCost = (c) => ({
   incurredAt: dateString(c.incurredAt),
   serviceCenter: c.serviceCenter ?? null,
   invoiceNumber: c.invoiceNumber ?? null,
+  bill: fileView(ctx, c.billFile, 'costs:read'),
   odometer: c.odometer ?? null,
   createdBy: c.createdBy ?? null,
   notes: c.notes ?? '',

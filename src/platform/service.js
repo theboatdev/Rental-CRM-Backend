@@ -7,19 +7,23 @@ const {
   TENANT_STATUS_TRANSITIONS,
   canTransitionTenant,
   CreateTenantInputSchema,
-  PROVISIONING_STEPS
+  PROVISIONING_STEPS,
+  SLUG_PATTERN
 } = require('./tenants/rules');
 const { zodIssues } = require('./config/path');
 const { conflict, invalid, notFound } = require('./errors');
 const { createProvisioner, newJobSteps } = require('./provisioning');
 const { clerkApiError } = require('./clerk');
+const { createStorageGateway } = require('./storage');
+const { signLogoUpload, tenantPrefix } = require('../tenant/files');
 
 /**
  * Platform (control plane) operations behind /api/platform, stored in the
  * platform database. Responses are plain JSON with string ids and ISO dates,
  * in the shapes the admin dashboard's `src/lib/platform-api/types.ts` describes.
  *
- * `clerk` is the gateway from `createClerkGateway` (a fake in tests).
+ * `clerk` is the gateway from `createClerkGateway`, `storage` the one from
+ * `createStorageGateway` (fakes in tests).
  */
 
 const iso = (date) => (date ? new Date(date).toISOString() : null);
@@ -88,8 +92,8 @@ const isDuplicateKey = (error) => error?.code === 11000;
 /** Thrown inside a transaction to abort it when a compare-and-set update matched nothing. */
 class StaleWrite extends Error {}
 
-function createPlatformService({ platformDb, getTenantDb, clerk }) {
-  const { Tenant, TenantConfig, ProvisioningJob, TenantSecret, AuditLog } = platformDb.models;
+function createPlatformService({ platformDb, getTenantDb, clerk, storage = createStorageGateway({}) }) {
+  const { Tenant, TenantConfig, ProvisioningJob, TenantSecret, DigestRun, AuditLog } = platformDb.models;
   const provisioner = createProvisioner({ platformDb, getTenantDb, clerk });
 
   const record = (entry, session) => AuditLog.create([{ ...entry, at: new Date() }], { session });
@@ -134,6 +138,21 @@ function createPlatformService({ platformDb, getTenantDb, clerk }) {
     /** For the tenant API: the tenant linked to a Clerk organization, with its active config, or null. */
     async findTenantByClerkOrgId(clerkOrgId) {
       const tenant = await Tenant.findOne({ clerkOrgId }).lean();
+      if (!tenant) return null;
+      const active = await activeConfigOf(tenant);
+      return { tenant: presentTenant(tenant), activeConfig: active && presentConfigVersion(active) };
+    },
+
+    /** Signs a browser upload of the tenant's logo: a public image, whose `secure_url` goes into `branding.logoUrl`. */
+    async signLogoUpload(tenantId) {
+      const tenant = await requireTenant(tenantId);
+      return signLogoUpload(storage, String(tenant._id));
+    },
+
+    /** For the guest portal: the tenant with a slug, with its active config, or null. */
+    async findTenantBySlug(slug) {
+      if (typeof slug !== 'string' || !SLUG_PATTERN.test(slug)) return null;
+      const tenant = await Tenant.findOne({ slug }).lean();
       if (!tenant) return null;
       const active = await activeConfigOf(tenant);
       return { tenant: presentTenant(tenant), activeConfig: active && presentConfigVersion(active) };
@@ -245,8 +264,8 @@ function createPlatformService({ platformDb, getTenantDb, clerk }) {
 
     /**
      * Permanently deletes a tenant: its Clerk organization (with memberships
-     * and invitations), its database, and its configs, provisioning job and
-     * secrets. Only an archived tenant, or one whose provisioning failed, and
+     * and invitations), its files, its database, and its configs,
+     * provisioning job and secrets. Only an archived tenant, or one whose provisioning failed, and
      * only when `confirmSlug` repeats its slug. The platform audit log keeps
      * the tenant's history. Members' Clerk accounts stay; they just lose this
      * workspace. Each step can run again, so a deletion that failed half-way
@@ -274,18 +293,20 @@ function createPlatformService({ platformDb, getTenantDb, clerk }) {
           throw clerkApiError(error);
         }
       }
+      // Without storage configured, no files can have been uploaded through this backend.
+      if (storage.configured) await storage.deletePrefix(tenantPrefix(String(tenant._id)));
       await getTenantDb(tenant.dbName).dropDatabase();
       platformDb.removeDb(tenant.dbName);
       await platformDb.transaction(async (session) => {
         await Tenant.deleteOne({ _id: tenant._id }, { session });
-        for (const Model of [TenantConfig, ProvisioningJob, TenantSecret]) await Model.deleteMany({ tenantId: tenant._id }, { session });
+        for (const Model of [TenantConfig, ProvisioningJob, TenantSecret, DigestRun]) await Model.deleteMany({ tenantId: tenant._id }, { session });
         await record(
           {
             actor: actorOf(actor),
             action: 'tenant.deleted',
             tenantId: tenant._id,
             tenantName: tenant.name,
-            summary: `Deleted ${tenant.name} (${tenant.slug}): its Clerk organization, database ${tenant.dbName}, configs and secrets`
+            summary: `Deleted ${tenant.name} (${tenant.slug}): its Clerk organization, files, database ${tenant.dbName}, configs and secrets`
           },
           session
         );

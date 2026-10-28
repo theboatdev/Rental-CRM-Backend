@@ -130,11 +130,38 @@ Moved to Phase 5, because they need file storage or a scheduler:
 - the guest registration page;
 - sending the digest on its schedule.
 
-## Phase 5: Files, guest portal, automation
+## Phase 5: Files, guest portal, automation ✅
 
-- **Files.** aws-sdk v3 with presigned uploads and downloads under `tenants/<id>/`: renter documents, inspection photos, bills, logos.
-- **Guest portal.** Public `/book/<slug>` backed by `/api/public/:slug/*`. It's rate-limited and only on when `guestPortal.enabled`.
-- **WhatsApp digest.** A scheduler loops over active tenants, using each one's `cron` and `timezone`, with credentials from `tenant_secrets`.
+- **Files on Cloudinary**, replacing the planned S3 storage (see [platform-architecture.md](platform-architecture.md#files)).
+  - **Gateway** (`src/platform/storage.js`): the only module that calls Cloudinary. It signs uploads, checks upload responses, makes download links that expire after 10 minutes, and deletes assets or a tenant's whole prefix. Tests use `test/helpers/fakeStorage.js`, which signs like Cloudinary.
+  - **Uploads** (`src/tenant/files.js`): `POST /api/v1/uploads { kind }` for `document`, `inspection` and `bill`, each checking its module and permissions. Files are private (`authenticated`); photos are stored as JPEGs at most 2000 px.
+  - **Records.** Renter documents carry their scan, inspections a photo per point (a photo checks its point), costs their bill, enforcing `modules.costs.requireBillUpload`. `PUT /renters/:id/documents/:documentId/file` and `PUT /costs/:id/bill` attach a file later. Replacing a file or deleting a cost deletes the old file.
+  - **Models.** `fileKey` / `billFileKey` became `file` / `billFile` (`src/models/tenant/file.js`). Responses carry `file.url` only for callers with the record's read permission.
+  - **Usage.** `usage.storageGb` adds up the tenant's file sizes, and signing refuses uploads once it reaches `limits.storageGb`.
+  - **Tenant deletion** deletes `tenants/<id>/` in Cloudinary before the database.
+  - **Logo.** `POST /api/platform/tenants/:id/uploads/logo` signs a public upload; the admin dashboard's branding section uploads it into `branding.logoUrl`.
+  - **Dependencies.** Added `cloudinary`; removed `aws-sdk`, `multer` and `multer-s3`, which nothing used. `npm audit fix` moved `body-parser` to 1.20.9, so the backend audit is clean.
+- **Guest portal** (see [platform-architecture.md](platform-architecture.md#guest-portal)).
+  - `/api/public/:slug` (`src/routes/public.js`, `src/tenant/portal.js`): the profile, free vehicles for dates, document scan uploads, and bookings. Only for active tenants with `guestPortal.enabled`.
+  - Rate-limited per client IP (`src/middleware/rateLimit.js`); `TRUST_PROXY` makes that work behind a load balancer.
+  - A booking registers the renter (`source: 'ONLINE'`) and reserves the vehicle in one transaction, through the counter's booking code. `bookWithin` and `insertRenter` were split out of `rentals.js` and `renters.js` for that.
+  - The tenant's built-in field settings, `residentTypes` and `requireDocumentUpload` apply. Conflicts never name other bookings or plates.
+  - Tenant app: the public page `/book/<slug>` with dates, vehicles, the renter's details and document scans, and a voucher to send on WhatsApp.
+- **WhatsApp digest** (see [platform-architecture.md](platform-architecture.md#whatsapp-digest)).
+  - **Per-tenant connection:** phone number ID, access token and an optional template, encrypted in `tenant_secrets` with `TENANT_SECRETS_KEY` (`secrets.js`, `integrations.js`). Super admins set it on the tenant page; the API never returns the token.
+  - **Scheduler** (`digests.js`, `cron.js`): every minute, sends the digests whose cron fired in the last hour in the tenant's timezone. A `digest_runs` record per scheduled minute, with a unique index, means one send per slot across backend instances.
+  - **Delivery:** as the tenant's approved template when set (it arrives outside WhatsApp's 24-hour window), otherwise as plain text. Each recipient's result is recorded.
+  - **Tenant app:** the WhatsApp page shows whether it's connected and the latest runs, and `POST /api/v1/whatsapp/digest/send` (`whatsapp:manage`) sends it now.
+- **Tests.**
+  - `test/files.test.js`: the gateway's signatures against Cloudinary's documented algorithm, upload permissions, forged and cross-tenant files, scans, photos and bills, storage limits, deletion.
+  - `test/portal.test.js`: the public routes, availability, document rules, conflicts, rate limits.
+  - `test/digests.test.js`: cron in time zones, encryption, the connection API, scheduling once per slot, templates, manual sends.
+  - 222 backend tests in all. Both apps pass `typecheck`, `lint` and `build`.
+
+Not done, for later:
+- The tenant app's file inputs need a browser check against a real Cloudinary account; the tests cover the backend with a fake.
+- A CAPTCHA for the guest portal, if bookings are abused.
+- Tenant admins can't edit digest recipients themselves: they're in the config, which only super admins edit.
 
 ## Phase 6: Hardening and deploy
 
@@ -146,5 +173,5 @@ Moved to Phase 5, because they need file storage or a scheduler:
 - **Tests.** Playwright end-to-end tests for both apps.
 - **Deploy.**
   - Both Next.js apps on Vercel; the backend on Render, Fly or ECS.
-  - MongoDB Atlas and S3.
+  - MongoDB Atlas and Cloudinary.
   - Clerk production instance (see [clerk-setup.md](clerk-setup.md#later-phases)).

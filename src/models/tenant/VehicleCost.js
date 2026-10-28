@@ -1,5 +1,6 @@
 const { Schema } = require('mongoose');
 const actorSchema = require('../actor');
+const fileSchema = require('./file');
 
 const vehicleCostSchema = new Schema(
   {
@@ -10,7 +11,7 @@ const vehicleCostSchema = new Schema(
     incurredAt: { type: Date, default: Date.now },
     serviceCenter: { type: String },
     invoiceNumber: { type: String },
-    billFileKey: { type: String }, // S3 object key; required when modules.costs.requireBillUpload
+    billFile: { type: fileSchema }, // the scanned bill; required when modules.costs.requireBillUpload
     odometer: { type: Number },
     createdBy: { type: actorSchema },
     notes: { type: String },

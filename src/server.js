@@ -7,8 +7,18 @@ const { createPlatformAuth } = require('./middleware/platformAuth');
 const { createTenantAuth } = require('./middleware/tenantAuth');
 const { connectPlatformDb, waitForConnection, syncPlatformIndexes } = require('./db/platform');
 const { createClerkGateway } = require('./platform/clerk');
+const { createStorageGateway } = require('./platform/storage');
+const { createSecretBox } = require('./platform/secrets');
+const { createWhatsAppGateway } = require('./platform/whatsapp');
 
 const PORT = process.env.PORT || 5000;
+
+/** TRUST_PROXY: `true`, a number of proxy hops, or Express's names (e.g. `loopback`). Unset: client IPs are taken as they arrive. */
+function trustProxySetting(value) {
+  if (!value || value === 'false') return false;
+  if (value === 'true') return true;
+  return /^\d+$/.test(value) ? Number(value) : value;
+}
 
 const clerkOptions = {
   secretKey: process.env.CLERK_SECRET_KEY,
@@ -21,6 +31,12 @@ if (!process.env.CLERK_SECRET_KEY) {
 }
 if (!process.env.CLERK_WEBHOOK_SIGNING_SECRET) {
   console.warn('[webhooks] CLERK_WEBHOOK_SIGNING_SECRET is not set: /webhooks/clerk responds 503 and members are not synced from Clerk.');
+}
+if (!process.env.CLOUDINARY_URL) {
+  console.warn('[storage] CLOUDINARY_URL is not set: uploads respond 503 and records are saved without files.');
+}
+if (!process.env.TENANT_SECRETS_KEY) {
+  console.warn('[secrets] TENANT_SECRETS_KEY is not set: WhatsApp connections can\'t be stored, so digests are not sent.');
 }
 
 // The server starts without a database; the routes that need it respond 503 until it's reachable.
@@ -47,7 +63,12 @@ const app = createApp({
     secretKey: process.env.CLERK_SECRET_KEY,
     invitationRedirectUrl: process.env.CLERK_INVITATION_REDIRECT_URL
   }),
-  webhookSigningSecret: process.env.CLERK_WEBHOOK_SIGNING_SECRET
+  storage: createStorageGateway({ url: process.env.CLOUDINARY_URL }),
+  secretBox: createSecretBox(process.env.TENANT_SECRETS_KEY),
+  whatsapp: createWhatsAppGateway({ graphVersion: process.env.WHATSAPP_GRAPH_VERSION || undefined }),
+  scheduleDigests: Boolean(platformDb),
+  webhookSigningSecret: process.env.CLERK_WEBHOOK_SIGNING_SECRET,
+  trustProxy: trustProxySetting(process.env.TRUST_PROXY)
 });
 
 app.listen(PORT, () => {

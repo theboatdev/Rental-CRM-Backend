@@ -1,5 +1,6 @@
 const { Schema } = require('mongoose');
 const actorSchema = require('../actor');
+const fileSchema = require('./file');
 const { RENTAL_STATUSES, SOURCES } = require('./enums');
 
 const inspectionSchema = new Schema(
@@ -7,8 +8,8 @@ const inspectionSchema = new Schema(
     at: { type: Date, default: Date.now },
     by: { type: actorSchema },
     odometer: { type: Number },
-    // One photo per entry in modules.rentals.inspectionPoints.
-    photos: [new Schema({ point: { type: String, required: true }, fileKey: { type: String } }, { _id: false })],
+    // The checked entries of modules.rentals.inspectionPoints, each with its photo when one was taken.
+    photos: [new Schema({ point: { type: String, required: true }, file: { type: fileSchema } }, { _id: false })],
     notes: { type: String }
   },
   { _id: false }

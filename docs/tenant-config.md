@@ -49,10 +49,10 @@ Module settings:
 | Module | Settings |
 |---|---|
 | `vehicles` | `serviceIntervalKm`: drives service-due warnings |
-| `rentals` | `inspectionPoints` (photo checklist), `requirePickupInspection`, `requireDropInspection` |
-| `costs` | `requireBillUpload` |
-| `whatsappDigest` | `cron` (5 fields, in the tenant's timezone), `recipients` (E.164) |
-| `guestPortal` | `residentTypes` (who can self-register), `requireDocumentUpload` |
+| `rentals` | `inspectionPoints` (the checklist, with a photo per point), `requirePickupInspection`, `requireDropInspection` (every point checked; photos stay optional) |
+| `costs` | `requireBillUpload`: a cost can't be logged without its scanned bill |
+| `whatsappDigest` | `cron` (5 fields, in the tenant's timezone), `recipients` (E.164). Sending also needs the tenant's WhatsApp connection, set on its page in the admin dashboard |
+| `guestPortal` | `residentTypes` (who can self-register), `requireDocumentUpload` (online bookings need a scan of every document, and the ones the renter type requires) |
 
 Every object is **strict**, so unknown keys such as a misspelled module are rejected rather than ignored.
 

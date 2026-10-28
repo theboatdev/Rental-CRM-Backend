@@ -1,10 +1,13 @@
 const { z } = require('zod');
+const { invalid } = require('../platform/errors');
+const { refreshStorageUsage } = require('../platform/usage');
 const { parse, findOr404, todayIn, toDate, DateStringSchema, IdSchema, activeListKey } = require('./common');
 const { presentCost, presentFuelLog } = require('./presenters');
 const { recordAudit } = require('./audit');
 const { parseRecord, customFieldsInput } = require('./fields');
+const { fileInput, discardFiles } = require('./files');
 
-const CostInputSchema = (config) =>
+const CostInputSchema = (ctx, config = ctx.config) =>
   z.strictObject({
     vehicleId: IdSchema,
     category: activeListKey(config, 'costCategories'),
@@ -13,10 +16,14 @@ const CostInputSchema = (config) =>
     incurredAt: DateStringSchema.optional(),
     serviceCenter: z.string().trim().max(120).optional(),
     invoiceNumber: z.string().trim().max(60).optional(),
+    // The scanned bill, uploaded as a `bill` file. Required with modules.costs.requireBillUpload.
+    billFile: fileInput(ctx, 'bill').optional(),
     odometer: z.number().int().min(0).optional(),
     notes: z.string().trim().max(1000).default(''),
     customFields: customFieldsInput(config, 'costs')
   });
+
+const AttachBillSchema = (ctx) => z.strictObject({ billFile: fileInput(ctx, 'bill') });
 
 const FuelInputSchema = z
   .strictObject({
@@ -45,19 +52,24 @@ async function raiseMileage(ctx, vehicleId, odometer) {
 
 /**
  * Operating costs (service bills, repairs, insurance; categories from
- * `lists.costCategories`) and fuel fill-ups, per vehicle.
+ * `lists.costCategories`) and fuel fill-ups, per vehicle. A cost can carry
+ * the scan of its bill.
  */
-function createCosts() {
+function createCosts({ platformDb }) {
+  const refreshStorage = (ctx) => refreshStorageUsage({ Tenant: platformDb.models.Tenant, tenantId: ctx.tenantId, models: ctx.models });
   const listCostDocs = listFor((ctx) => ctx.models.VehicleCost, 'incurredAt');
   const listFuelDocs = listFor((ctx) => ctx.models.FuelLog, 'filledAt');
 
   return {
     async listCosts(ctx, query) {
-      return (await listCostDocs(ctx, query)).map(presentCost);
+      return (await listCostDocs(ctx, query)).map((c) => presentCost(c, ctx));
     },
 
     async createCost(ctx, input) {
-      const data = parseRecord(CostInputSchema(ctx.config), input, ctx.config, 'costs');
+      const data = parseRecord(CostInputSchema(ctx), input, ctx.config, 'costs');
+      if (ctx.config.modules.costs.requireBillUpload && !data.billFile) {
+        throw invalid('Attach the scanned bill', [{ path: 'billFile', message: 'Required' }]);
+      }
       const vehicle = await findOr404(ctx.models.Vehicle, data.vehicleId, 'Vehicle');
       const { vehicleId, incurredAt, ...fields } = data;
       const cost = await ctx.models.VehicleCost.create({
@@ -67,13 +79,35 @@ function createCosts() {
         createdBy: ctx.actor
       });
       await raiseMileage(ctx, vehicle._id, data.odometer);
+      if (data.billFile) await refreshStorage(ctx);
       await recordAudit(ctx, { action: 'cost.created', entityType: 'cost', entityId: String(cost._id), summary: `Logged ${data.amount} for ${vehicle.plateNumber}: ${data.title}` });
-      return presentCost({ ...cost.toObject(), vehicle });
+      return presentCost({ ...cost.toObject(), vehicle }, ctx);
     },
 
+    /** Attaches the scanned bill to a cost logged without it, or replaces (and deletes) the one it had. */
+    async attachBill(ctx, costId, input) {
+      const cost = await findOr404(ctx.models.VehicleCost, costId, 'Cost', { populate: { vehicle: 'plateNumber make model' } });
+      const { billFile } = parse(AttachBillSchema(ctx), input);
+      await ctx.models.VehicleCost.updateOne({ _id: cost._id }, { $set: { billFile } });
+      await discardFiles(ctx, [cost.billFile]);
+      await refreshStorage(ctx);
+      await recordAudit(ctx, {
+        action: 'cost.bill_attached',
+        entityType: 'cost',
+        entityId: costId,
+        summary: `${cost.billFile ? 'Replaced' : 'Attached'} the bill of "${cost.title}" for ${cost.vehicle?.plateNumber ?? 'a deleted vehicle'}`
+      });
+      return presentCost({ ...cost, billFile }, ctx);
+    },
+
+    /** Deletes the entry and its bill. */
     async deleteCost(ctx, costId) {
       const cost = await findOr404(ctx.models.VehicleCost, costId, 'Cost', { populate: { vehicle: 'plateNumber' } });
       await ctx.models.VehicleCost.deleteOne({ _id: cost._id });
+      if (cost.billFile) {
+        await discardFiles(ctx, [cost.billFile]);
+        await refreshStorage(ctx);
+      }
       await recordAudit(ctx, {
         action: 'cost.deleted',
         entityType: 'cost',

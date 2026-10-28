@@ -7,6 +7,7 @@ const PLATFORM_SCHEMAS = {
   TenantConfig: require('./TenantConfig'),
   ProvisioningJob: require('./ProvisioningJob'),
   TenantSecret: require('./TenantSecret'),
+  DigestRun: require('./DigestRun'),
   AuditLog: require('./AuditLog')
 };
 

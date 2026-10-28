@@ -3,6 +3,7 @@ const cors = require('cors');
 const { createPlatformRouter } = require('./routes/platform');
 const { createTenantRouter } = require('./routes/tenant');
 const { createWebhookRouter } = require('./routes/webhooks');
+const { createPublicRouter } = require('./routes/public');
 const { createPlatformService } = require('./platform/service');
 const { createMemberSync } = require('./platform/members');
 const { createTenantUsers } = require('./platform/tenantUsers');
@@ -10,6 +11,11 @@ const { createTenantDbGetter } = require('./db/tenantDb');
 const { errorHandler } = require('./middleware/errorHandler');
 const { createTenantAuth } = require('./middleware/tenantAuth');
 const { isConnected } = require('./db/platform');
+const { createStorageGateway } = require('./platform/storage');
+const { createSecretBox } = require('./platform/secrets');
+const { createWhatsAppGateway } = require('./platform/whatsapp');
+const { createIntegrations } = require('./platform/integrations');
+const { createDigests } = require('./platform/digests');
 
 /**
  * Builds the Express app.
@@ -18,15 +24,37 @@ const { isConnected } = require('./db/platform');
  * - `platformDb` is the platform connection; tenant DBs are reached through
  *   it. Without it, everything but /api/health and the platform rules responds 503.
  * - `clerk` is the Clerk gateway used by provisioning and the webhooks (a fake in tests).
+ * - `storage` is the Cloudinary gateway for files (a fake in tests); without
+ *   one, uploads respond 503.
+ * - `secretBox` encrypts integration credentials (secrets.js); `whatsapp`
+ *   sends digests (a fake in tests). With `scheduleDigests`, digests go out
+ *   on each tenant's schedule.
  * - `webhookSigningSecret` verifies /webhooks/clerk.
+ * - `trustProxy` is Express's `trust proxy` setting, so the public routes'
+ *   rate limits see client IPs behind a load balancer.
  */
-function createApp({ platformAuth, tenantAuth = createTenantAuth({}), platformDb, clerk, webhookSigningSecret }) {
+function createApp({
+  platformAuth,
+  tenantAuth = createTenantAuth({}),
+  platformDb,
+  clerk,
+  storage = createStorageGateway({}),
+  secretBox = createSecretBox(),
+  whatsapp = createWhatsAppGateway(),
+  scheduleDigests = false,
+  webhookSigningSecret,
+  trustProxy = false
+}) {
   const getTenantDb = platformDb && createTenantDbGetter(platformDb);
-  const service = platformDb && createPlatformService({ platformDb, getTenantDb, clerk });
+  const service = platformDb && createPlatformService({ platformDb, getTenantDb, clerk, storage });
   const memberSync = platformDb && createMemberSync({ platformDb, getTenantDb, clerk });
   const tenantUsers = platformDb && createTenantUsers({ platformDb, getTenantDb, clerk });
+  const integrations = platformDb && createIntegrations({ platformDb, secretBox });
+  const digests = platformDb && createDigests({ platformDb, getTenantDb, whatsapp, integrations });
+  if (digests && scheduleDigests) digests.start();
 
   const app = express();
+  app.set('trust proxy', trustProxy);
 
   app.use(cors());
   // Before the JSON parser: webhook signatures cover the raw body.
@@ -44,8 +72,9 @@ function createApp({ platformAuth, tenantAuth = createTenantAuth({}), platformDb
     });
   });
 
-  app.use('/api/platform', createPlatformRouter({ service, tenantUsers, platformAuth, platformDb }));
-  app.use('/api/v1', createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory: service, clerk, memberSync }));
+  app.use('/api/platform', createPlatformRouter({ service, tenantUsers, integrations, platformAuth, platformDb }));
+  app.use('/api/v1', createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory: service, clerk, memberSync, storage, digests }));
+  app.use('/api/public/:slug', createPublicRouter({ platformDb, getTenantDb, directory: service, storage }));
 
   app.use(errorHandler);
 

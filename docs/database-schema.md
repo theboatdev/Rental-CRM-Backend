@@ -21,10 +21,11 @@ Conventions:
 
 | Collection (model) | Fields | Indexes |
 |---|---|---|
-| `tenants` (`Tenant`) | `name`, `slug`, `status` (`provisioning` · `active` · `suspended` · `archived`), `template`, `adminEmail`, `adminName`, `clerkOrgId`, `dbName` (set from the id), `activeConfigVersion`, `currency`, `limits { maxVehicles, maxUsers, storageGb }`, `usage { vehicles, members, storageGb }`, `createdBy` | `slug` unique; `clerkOrgId` unique when set |
+| `tenants` (`Tenant`) | `name`, `slug`, `status` (`provisioning` · `active` · `suspended` · `archived`), `template`, `adminEmail`, `adminName`, `clerkOrgId`, `dbName` (set from the id), `activeConfigVersion`, `currency`, `limits { maxVehicles, maxUsers, storageGb }`, `usage { vehicles, members, storageGb }` (`storageGb` adds up the tenant's file `bytes`), `createdBy` | `slug` unique; `clerkOrgId` unique when set |
 | `tenant_configs` (`TenantConfig`) | `tenantId`, `version`, `config` (validated before insert), `note`, `createdBy`, `createdAt`. Immutable | `{ tenantId, version }` unique |
 | `provisioning_jobs` (`ProvisioningJob`) | `tenantId`, `status` (`running` · `succeeded` · `failed`), `steps [{ key, label, status, error, attempts, finishedAt }]`, `startedAt`, `finishedAt`, `heartbeatAt` (refreshed at every step; a stale one means the run was cut off) | `tenantId` unique; `status` |
-| `tenant_secrets` (`TenantSecret`) | `tenantId`, `name` (e.g. `whatsapp.accessToken`), `ciphertext`, `iv`, `authTag` (AES-256-GCM), `keyVersion`, `updatedBy` | `{ tenantId, name }` unique |
+| `tenant_secrets` (`TenantSecret`) | `tenantId`, `name` (`whatsapp.connection`: the phone number ID, access token and template), `ciphertext`, `iv`, `authTag` (AES-256-GCM under `TENANT_SECRETS_KEY`, bound to the tenant and name), `keyVersion`, `updatedBy` | `{ tenantId, name }` unique |
+| `digest_runs` (`DigestRun`) | `tenantId`, `trigger` (`schedule` · `manual`), `slot` (the scheduled minute), `status` (`sending` · `sent` · `partial` · `failed`), `mode` (`text` · `template`), `includesFinancials`, `results [{ to, ok, messageId, error }]`, `error`, `by` (manual runs), `startedAt`, `finishedAt` | `{ tenantId, slot }` unique for `schedule` runs (one backend instance claims each slot); `{ tenantId, startedAt }` |
 | `platform_audit_logs` (`AuditLog`) | `at`, `actor`, `action`, `tenantId`, `tenantName`, `summary` | `at`; `{ tenantId, at }` |
 
 ## Tenant database
@@ -34,10 +35,10 @@ Conventions:
 | `members` (`Member`) | `clerkUserId`, `email`, `name`, `roleKey`, `status` (`active` · `removed`), `removedAt`, `membershipSyncedAt` and `profileSyncedAt` (time of the last Clerk webhook event applied). No password: Clerk owns sign-in | `clerkUserId` unique; `{ roleKey, status }` |
 | `roles` (`Role`) | `key`, `name`, `description`, `permissions [string]`, `system` | `key` unique |
 | `vehicles` (`Vehicle`) | `plateNumber`, `make`, `model`, `year` (absent when the config turns it off), `transmission` (`AUTOMATIC` · `MANUAL`), `fuelType` (`PETROL` · `DIESEL` · `HYBRID` · `ELECTRIC`), `dailyRate`, `secondaryDailyRate`, `depositAmount`, `mileage`, `status` (`AVAILABLE` · `RENTED` · `MAINTENANCE`), `thumbnail`, `notes`, `customFields` | `plateNumber` unique; `status` |
-| `renters` (`Renter`) | `profileId` (e.g. `SR-0146`), `fullName`, `phone`, `email`, `residentType` (`local` · `tourist`), `country`, `address`, `emergencyContact { name, phone, relation }`, `documents [{ type (list key), number, fileKey, verified, verifiedBy, verifiedAt, uploadedAt }]`, `source` (`COUNTER` · `ONLINE`), `notes`, `customFields` | `profileId` unique; `phone` |
-| `rentals` (`Rental`) | `code` (`RNT-…`, or `BK-…` while reserved), `bookingCode` (the `BK-…` code after check-in), `renter`, `vehicle`, `status` (`RESERVED` · `ACTIVE` · `COMPLETED` · `CANCELLED`), `source`, `startDate`, `endDate`, `actualReturnDate`, `totalDays`, `dailyRate`, `totalAmount`, `depositAmount`, `paidAmount`, `depositRefunded`, `startMileage`, `endMileage`, `pickupInspection` and `dropInspection` (`{ at, by, odometer, photos [{ point, fileKey }], notes }`), `cancelledAt`, `createdBy`, `notes`, `customFields` | `code` unique; `{ vehicle, status, startDate }`; `{ renter, startDate }` |
+| `renters` (`Renter`) | `profileId` (e.g. `SR-0146`), `fullName`, `phone`, `email`, `residentType` (`local` · `tourist`), `country`, `address`, `emergencyContact { name, phone, relation }`, `documents [{ type (list key), number, file, verified, verifiedBy, verifiedAt, uploadedAt }]`, `source` (`COUNTER` · `ONLINE`), `notes`, `customFields` | `profileId` unique; `phone` |
+| `rentals` (`Rental`) | `code` (`RNT-…`, or `BK-…` while reserved), `bookingCode` (the `BK-…` code after check-in), `renter`, `vehicle`, `status` (`RESERVED` · `ACTIVE` · `COMPLETED` · `CANCELLED`), `source`, `startDate`, `endDate`, `actualReturnDate`, `totalDays`, `dailyRate`, `totalAmount`, `depositAmount`, `paidAmount`, `depositRefunded`, `startMileage`, `endMileage`, `pickupInspection` and `dropInspection` (`{ at, by, odometer, photos [{ point, file }], notes }`: the checked points, each with its photo when one was taken), `cancelledAt`, `createdBy`, `notes`, `customFields` | `code` unique; `{ vehicle, status, startDate }`; `{ renter, startDate }` |
 | `payments` (`Payment`) | `receiptNumber` (`RCPT-…` or `ADV-…`), `rental`, `renter`, `type` (`ADVANCE` · `RENTAL` · `DEPOSIT` · `DAMAGE` · `LATE_FEE` · `REFUND`), `method` (list key), `amount`, `transactionReference`, `paidAt`, `receivedBy`, `voidedAt`, `voidedBy`, `voidReason`, `notes`, `customFields` | `receiptNumber` unique; `rental`; `paidAt` |
-| `costs` (`VehicleCost`) | `vehicle`, `category` (list key), `title`, `amount`, `incurredAt`, `serviceCenter`, `invoiceNumber`, `billFileKey`, `odometer`, `createdBy`, `notes`, `customFields` | `{ vehicle, incurredAt }`; `incurredAt` |
+| `costs` (`VehicleCost`) | `vehicle`, `category` (list key), `title`, `amount`, `incurredAt`, `serviceCenter`, `invoiceNumber`, `billFile`, `odometer`, `createdBy`, `notes`, `customFields` | `{ vehicle, incurredAt }`; `incurredAt` |
 | `fuel_logs` (`FuelLog`) | `vehicle`, `filledAt`, `liters`, `pricePerLiter`, `totalCost`, `station`, `odometer`, `createdBy`, `notes` | `{ vehicle, filledAt }` |
 | `counters` (`Counter`) | `_id` (sequence key, e.g. `rental:2026`), `seq`. `Counter.next(key, { session })` takes the next number atomically | — |
 | `audit_logs` (`AuditLog`) | `at`, `actor`, `action`, `entityType`, `entityId`, `summary` | `at`; `{ entityType, entityId, at }` |
@@ -47,7 +48,8 @@ Notes:
 - **Derived values aren't stored.** Overdue is an `ACTIVE` rental past its `endDate`. Payment status compares `paidAmount` with `totalAmount + depositAmount`. A vehicle's current renter is its `ACTIVE` rental.
 - **`paidAmount`** is kept in step with `payments` inside the transaction that records or voids a payment.
 - **Ledger entries are voided, never deleted** (`payments:void`).
-- **`fileKey` fields** are S3 object keys under `tenants/<tenantId>/`, served through presigned URLs (Phase 5).
+- **`file` and `billFile`** (`src/models/tenant/file.js`) are `{ publicId, resourceType, format, bytes, uploadedAt }`: a Cloudinary asset under `tenants/<tenantId>/<documents|inspections|bills>/`. Responses turn them into links that expire after 10 minutes. See [platform-architecture.md](platform-architecture.md#files).
+- **Online records.** Renters and rentals from the guest portal have `source: 'ONLINE'`, and `createdBy` is `{ id: 'guest-portal', name: 'Guest portal' }`.
 
 ## Changes from the single-tenant design
 
@@ -56,5 +58,5 @@ The original demo backend had one database with a `User` model and title-case en
 - `User` (with `passwordHash` and `ADMIN`/`STAFF`) → `Member` plus `Role`. Clerk owns credentials; permissions come from roles ([rbac.md](rbac.md)).
 - Enums → uppercase keys: `'Available'` → `AVAILABLE`, `'In Service / Maintenance'` → `MAINTENANCE`. Vehicles no longer have a `Reserved` status, since reservations are rentals. Rentals no longer store `Overdue` or `paymentStatus`.
 - Hardcoded document types, payment methods and cost categories (`src/constants/`) → config list keys.
-- `isTourist` → `residentType`. `fileUrl` / `billFileUrl` → S3 `fileKey` / `billFileKey`. `receivedBy` is an actor rather than a `User` reference.
+- `isTourist` → `residentType`. `fileUrl` / `billFileUrl` → storage keys, which Phase 5 made `file` / `billFile`. `receivedBy` is an actor rather than a `User` reference.
 - New: `FuelLog`, `Counter`, `AuditLog`.

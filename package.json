@@ -11,13 +11,11 @@
   },
   "dependencies": {
     "@clerk/express": "^2.1.80",
-    "aws-sdk": "^2.1500.0",
+    "cloudinary": "^2.11.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "mongoose": "^8.3.4",
-    "multer": "^1.4.5-lts.1",
-    "multer-s3": "^3.0.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {

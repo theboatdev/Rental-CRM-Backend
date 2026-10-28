@@ -78,7 +78,7 @@ function createVehicles({ platformDb }) {
         ...presentVehicle(vehicle),
         stats: presentTotals(ctx, totals.of(vehicle._id)),
         rentals: rentals && rentals.map((r) => presentRental({ ...r, vehicle }, ctx)),
-        costs: costs && costs.map((c) => presentCost({ ...c, vehicle })),
+        costs: costs && costs.map((c) => presentCost({ ...c, vehicle }, ctx)),
         fuelLogs: fuelLogs && fuelLogs.map((f) => presentFuelLog({ ...f, vehicle }))
       };
     },

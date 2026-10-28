@@ -25,7 +25,7 @@ const invalidJsonResult = (issues) => ({ valid: false, issues, changes: [], remo
  * `req.actor`. The rules (/meta, /config/validate) work without a database;
  * everything after them needs `platformDb` connected.
  */
-function createPlatformRouter({ service, tenantUsers, platformAuth, platformDb }) {
+function createPlatformRouter({ service, tenantUsers, integrations, platformAuth, platformDb }) {
   const router = express.Router();
   router.use(platformAuth);
 
@@ -48,6 +48,8 @@ function createPlatformRouter({ service, tenantUsers, platformAuth, platformDb }
   router.get('/tenants/:tenantId', handle((req) => service.getTenant(req.params.tenantId)));
   router.patch('/tenants/:tenantId/status', handle((req) => service.setTenantStatus(req.params.tenantId, req.body?.status, req.actor)));
   router.delete('/tenants/:tenantId', handle((req) => service.deleteTenant(req.params.tenantId, { confirmSlug: req.body?.confirmSlug }, req.actor)));
+
+  router.post('/tenants/:tenantId/uploads/logo', handle((req) => service.signLogoUpload(req.params.tenantId), 201));
 
   router.get('/tenants/:tenantId/provisioning', handle((req) => service.getProvisioningJob(req.params.tenantId)));
   router.post('/tenants/:tenantId/provisioning/retry', handle((req) => service.retryProvisioning(req.params.tenantId, req.actor)));
@@ -90,6 +92,12 @@ function createPlatformRouter({ service, tenantUsers, platformAuth, platformDb }
   router.post(users('invitations'), handle((req) => tenantUsers.invite(req.params.tenantId, req.actor, req.body), 201));
   router.delete(users('invitations/:invitationId'), handle((req) => tenantUsers.revokeInvitation(req.params.tenantId, req.actor, req.params.invitationId)));
   router.get(users('roles'), handle((req) => tenantUsers.listRoles(req.params.tenantId, req.actor)));
+
+  // The tenant's WhatsApp connection, which sends its digest. The access token is never returned.
+  const whatsapp = '/tenants/:tenantId/integrations/whatsapp';
+  router.get(whatsapp, handle((req) => integrations.getWhatsApp(req.params.tenantId)));
+  router.put(whatsapp, handle((req) => integrations.setWhatsApp(req.params.tenantId, req.body, req.actor)));
+  router.delete(whatsapp, handle((req) => integrations.removeWhatsApp(req.params.tenantId, req.actor)));
 
   router.get(
     '/audit',
