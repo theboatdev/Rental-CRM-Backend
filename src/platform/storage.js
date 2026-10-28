@@ -44,7 +44,15 @@ function createStorageGateway({ url }) {
     const notConfigured = () => {
       throw storageNotConfigured();
     };
-    return { configured: false, signUpload: notConfigured, verifyUpload: notConfigured, downloadUrl: notConfigured, deleteAsset: notConfigured, deletePrefix: notConfigured };
+    return {
+      configured: false,
+      signUpload: notConfigured,
+      verifyUpload: notConfigured,
+      downloadUrl: notConfigured,
+      publicUrl: notConfigured,
+      deleteAsset: notConfigured,
+      deletePrefix: notConfigured
+    };
   }
 
   const { apiKey, apiSecret, cloudName } = parseCloudinaryUrl(url);
@@ -86,6 +94,11 @@ function createStorageGateway({ url }) {
         type,
         expires_at: unixTime(now) + LINK_TTL_SECONDS
       });
+    },
+
+    /** The CDN link of a public (`upload`) image, such as a vehicle photo. It never expires. */
+    publicUrl({ publicId, format }) {
+      return cloudinary.url(publicId, { secure: true, type: 'upload', resource_type: 'image', format, urlAnalytics: false });
     },
 
     /** Deletes one asset. One that's already gone counts as deleted. */

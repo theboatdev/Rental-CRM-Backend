@@ -89,7 +89,7 @@ function createCosts({ platformDb }) {
       const cost = await findOr404(ctx.models.VehicleCost, costId, 'Cost', { populate: { vehicle: 'plateNumber make model' } });
       const { billFile } = parse(AttachBillSchema(ctx), input);
       await ctx.models.VehicleCost.updateOne({ _id: cost._id }, { $set: { billFile } });
-      await discardFiles(ctx, [cost.billFile]);
+      await discardFiles(ctx, [cost.billFile], 'bill');
       await refreshStorage(ctx);
       await recordAudit(ctx, {
         action: 'cost.bill_attached',
@@ -105,7 +105,7 @@ function createCosts({ platformDb }) {
       const cost = await findOr404(ctx.models.VehicleCost, costId, 'Cost', { populate: { vehicle: 'plateNumber' } });
       await ctx.models.VehicleCost.deleteOne({ _id: cost._id });
       if (cost.billFile) {
-        await discardFiles(ctx, [cost.billFile]);
+        await discardFiles(ctx, [cost.billFile], 'bill');
         await refreshStorage(ctx);
       }
       await recordAudit(ctx, {

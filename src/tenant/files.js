@@ -4,9 +4,9 @@ const { conflict, forbidden, notFound } = require('../platform/errors');
 const { iso, parse, can, moduleOn } = require('./common');
 
 /**
- * Files of the tenant API: renter document scans, inspection photos and
- * service bills, stored in Cloudinary (src/platform/storage.js) under
- * `tenants/<tenantId>/<folder>/<uuid>`.
+ * Files of the tenant API: renter document scans, inspection photos, service
+ * bills and vehicle photos, stored in Cloudinary (src/platform/storage.js)
+ * under `tenants/<tenantId>/<folder>/<uuid>`.
  *
  * 1. The app asks for a signed upload of a kind (POST /uploads).
  * 2. The browser posts the file straight to Cloudinary with those fields.
@@ -14,16 +14,18 @@ const { iso, parse, can, moduleOn } = require('./common');
  *    which checks its signature and folder before the record keeps it.
  *
  * They're stored with the `authenticated` delivery type, so they're only
- * reached through the short-lived links `fileView` puts in responses.
+ * reached through the short-lived links `fileView` puts in responses. Kinds
+ * marked `public` (vehicle photos, which the guest booking page shows) are
+ * stored with `upload` and served from the CDN.
  */
 
 const DOCUMENT_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'pdf'];
 const PHOTO_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'];
 
 /**
- * `permissions`: any of them lets a member upload the kind. Photos are
- * stored as JPEGs at most 2000 px on a side, since private files can't be
- * resized on the way out.
+ * `permissions`: any of them lets a member upload the kind. Inspection
+ * photos are stored as JPEGs at most 2000 px on a side, since private files
+ * can't be resized on the way out; vehicle photos at most 1600 px.
  */
 const FILE_KINDS = {
   document: { folder: 'documents', module: 'renters', permissions: ['renters:create', 'renters:update'], readPermission: 'renters:read', allowedFormats: DOCUMENT_FORMATS },
@@ -36,8 +38,19 @@ const FILE_KINDS = {
     format: 'jpg',
     transformation: 'c_limit,h_2000,w_2000'
   },
-  bill: { folder: 'bills', module: 'costs', permissions: ['costs:create'], readPermission: 'costs:read', allowedFormats: DOCUMENT_FORMATS }
+  bill: { folder: 'bills', module: 'costs', permissions: ['costs:create'], readPermission: 'costs:read', allowedFormats: DOCUMENT_FORMATS },
+  vehiclePhoto: {
+    folder: 'vehicles',
+    module: 'vehicles',
+    permissions: ['vehicles:create', 'vehicles:update'],
+    public: true,
+    allowedFormats: PHOTO_FORMATS,
+    format: 'jpg',
+    transformation: 'c_limit,h_1600,w_1600'
+  }
 };
+
+const deliveryType = (spec) => (spec.public ? 'upload' : 'authenticated');
 
 const FILE_KIND_KEYS = Object.keys(FILE_KINDS);
 const UPLOAD_PERMISSIONS = [...new Set(Object.values(FILE_KINDS).flatMap((kind) => kind.permissions))];
@@ -57,7 +70,7 @@ function signFileUpload(storage, tenantId, kind) {
   return {
     kind,
     publicId,
-    ...storage.signUpload({ publicId, type: 'authenticated', allowedFormats: spec.allowedFormats, format: spec.format, transformation: spec.transformation })
+    ...storage.signUpload({ publicId, type: deliveryType(spec), allowedFormats: spec.allowedFormats, format: spec.format, transformation: spec.transformation })
   };
 }
 
@@ -106,15 +119,16 @@ function fileView(ctx, file, permission) {
 }
 
 /**
- * Deletes files a record no longer has (replaced, or the record was
- * deleted). The record already changed, so a failure is only logged: the
- * file is left over, nothing is lost.
+ * Deletes files of `kind` a record no longer has (replaced, or the record
+ * was deleted). The record already changed, so a failure is only logged:
+ * the file is left over, nothing is lost.
  */
-async function discardFiles(ctx, files) {
+async function discardFiles(ctx, files, kind) {
+  const type = deliveryType(FILE_KINDS[kind]);
   for (const file of files) {
     if (!file?.publicId) continue;
     try {
-      await ctx.storage.deleteAsset({ publicId: file.publicId, resourceType: file.resourceType, type: 'authenticated' });
+      await ctx.storage.deleteAsset({ publicId: file.publicId, resourceType: file.resourceType, type });
     } catch (error) {
       console.error(`[storage] Couldn't delete ${file.publicId}: ${error.message}`);
     }

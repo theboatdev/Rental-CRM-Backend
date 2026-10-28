@@ -16,18 +16,19 @@ const bytesOf = async (Model, project) => (await Model.aggregate([...project, { 
 
 /**
  * Adds up the bytes of a tenant's files (document scans, inspection photos,
- * bills) into `usage.storageGb`, shown against `limits.storageGb`. Uploads are
- * refused once it reaches the limit.
+ * bills, vehicle photos) into `usage.storageGb`, shown against
+ * `limits.storageGb`. Uploads are refused once it reaches the limit.
  */
 async function refreshStorageUsage({ Tenant, tenantId, models }) {
-  const { Renter, Rental, VehicleCost } = models;
+  const { Renter, Rental, VehicleCost, Vehicle } = models;
   const photoBytes = (inspection) => ({ $sum: `$${inspection}.photos.file.bytes` });
-  const [documents, photos, bills] = await Promise.all([
+  const [documents, photos, bills, vehiclePhotos] = await Promise.all([
     bytesOf(Renter, [{ $unwind: '$documents' }, { $project: { bytes: '$documents.file.bytes' } }]),
     bytesOf(Rental, [{ $project: { bytes: { $add: [photoBytes('pickupInspection'), photoBytes('dropInspection')] } } }]),
-    bytesOf(VehicleCost, [{ $project: { bytes: '$billFile.bytes' } }])
+    bytesOf(VehicleCost, [{ $project: { bytes: '$billFile.bytes' } }]),
+    bytesOf(Vehicle, [{ $project: { bytes: '$photo.bytes' } }])
   ]);
-  const storageGb = Math.round(((documents + photos + bills) / GB) * 10_000) / 10_000;
+  const storageGb = Math.round(((documents + photos + bills + vehiclePhotos) / GB) * 10_000) / 10_000;
   await Tenant.updateOne({ _id: tenantId }, { $set: { 'usage.storageGb': storageGb } });
 }
 

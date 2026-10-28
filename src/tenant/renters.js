@@ -144,7 +144,7 @@ function createRenters({ platformDb }) {
         { $set: { 'documents.$.file': file } },
         { returnDocument: 'after' }
       ).lean();
-      await discardFiles(ctx, [document.file]);
+      await discardFiles(ctx, [document.file], 'document');
       await refreshStorage(ctx);
       await recordAudit(ctx, {
         action: 'renter.document_file_attached',

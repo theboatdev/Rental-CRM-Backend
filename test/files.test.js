@@ -140,6 +140,10 @@ describe('the Cloudinary gateway', () => {
     assert.equal(Number(link.searchParams.get('expires_at')), Math.floor(now.getTime() / 1000) + 600);
   });
 
+  it('links public images on the CDN', () => {
+    assert.equal(gateway.publicUrl({ publicId: 'tenants/t1/vehicles/x', format: 'jpg' }), 'https://res.cloudinary.com/demo-cloud/image/upload/v1/tenants/t1/vehicles/x.jpg');
+  });
+
   it('responds 503 storage_not_configured without CLOUDINARY_URL', () => {
     const missing = createStorageGateway({});
     assert.equal(missing.configured, false);
@@ -160,6 +164,16 @@ describe('signed uploads', () => {
     assert.match(photo.body.publicId, /\/inspections\//);
     assert.equal(photo.body.fields.format, 'jpg');
     assert.equal(photo.body.fields.transformation, 'c_limit,h_2000,w_2000');
+  });
+
+  it('signs a public upload for a vehicle photo', async () => {
+    const { status, body } = await staff('POST', '/uploads', { kind: 'vehiclePhoto' });
+    assert.equal(status, 201);
+    assert.match(body.publicId, new RegExp(`^tenants/${tenantA.id}/vehicles/[0-9a-f-]{36}$`));
+    assert.equal(body.fields.type, 'upload');
+    assert.equal(body.fields.format, 'jpg');
+    assert.equal(body.fields.transformation, 'c_limit,h_1600,w_1600');
+    assert.equal((await accountant('POST', '/uploads', { kind: 'vehiclePhoto' })).status, 403);
   });
 
   it('needs a permission that writes records of the kind', async () => {
@@ -371,6 +385,50 @@ describe('bills', () => {
     assert.equal(attached.status, 200, JSON.stringify(attached.body));
     assert.ok(attached.body.bill.url);
     assert.equal(attached.body.vehicle.plateNumber, vehicle.plateNumber);
+  });
+});
+
+describe('vehicle photos', () => {
+  it('adds a vehicle with a photo, served from the CDN to guests too', async () => {
+    const thumbnail = await uploadAs(owner, 'vehiclePhoto', { bytes: 10 * MB });
+    const before = (await tenantDoc(tenantA)).usage.storageGb;
+    const created = await owner('POST', '/vehicles', { plateNumber: 'WP PHO-1', make: 'Toyota', model: 'Aqua', year: 2020, dailyRate: 9000, thumbnail });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.thumbnail, `https://res.cloudinary.test/fake/image/upload/${thumbnail.publicId}.jpg`);
+    assert.equal(created.body.photo, undefined);
+    assert.ok((await tenantDoc(tenantA)).usage.storageGb - before > 0.009);
+    assert.equal((await staff('GET', '/vehicles')).body.find((v) => v.id === created.body.id).thumbnail, created.body.thumbnail);
+  });
+
+  it('replaces and removes a photo, and deleting the vehicle deletes it', async () => {
+    const vehicle = await addVehicle();
+    const first = await uploadAs(staff, 'vehiclePhoto');
+    assert.equal((await staff('PATCH', `/vehicles/${vehicle.id}`, { thumbnail: first })).status, 200);
+
+    const second = await uploadAs(staff, 'vehiclePhoto');
+    const replaced = await staff('PATCH', `/vehicles/${vehicle.id}`, { thumbnail: second });
+    assert.match(replaced.body.thumbnail, new RegExp(`${second.publicId}\\.jpg$`));
+    assert.ok(storage.deleted.includes(first.publicId));
+
+    const removed = await staff('PATCH', `/vehicles/${vehicle.id}`, { thumbnail: null });
+    assert.equal(removed.body.thumbnail, null);
+    assert.ok(storage.deleted.includes(second.publicId));
+
+    const third = await uploadAs(staff, 'vehiclePhoto');
+    assert.equal((await staff('PATCH', `/vehicles/${vehicle.id}`, { thumbnail: third, mileage: 1200 })).status, 200);
+    assert.equal((await owner('DELETE', `/vehicles/${vehicle.id}`)).status, 200);
+    assert.ok(storage.deleted.includes(third.publicId));
+  });
+
+  it('refuses a typed-in URL or an upload of another kind', async () => {
+    const vehicle = await addVehicle();
+    const refused = async (thumbnail) => {
+      const res = await staff('PATCH', `/vehicles/${vehicle.id}`, { thumbnail });
+      assert.equal(res.status, 422);
+      return res.body.error.issues.map((i) => i.path);
+    };
+    assert.deepEqual(await refused('https://example.com/car.jpg'), ['thumbnail']);
+    assert.deepEqual(await refused(await uploadAs(staff, 'inspection')), ['thumbnail.publicId']);
   });
 });
 

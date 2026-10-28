@@ -111,16 +111,19 @@ Files are stored in **Cloudinary**: one product environment for the platform, wi
 | Renter documents (NIC, licence, passport…) | `tenants/<id>/documents/<uuid>` | `authenticated` |
 | Inspection photos | `tenants/<id>/inspections/<uuid>` | `authenticated` |
 | Service bills | `tenants/<id>/bills/<uuid>` | `authenticated` |
+| Vehicle photos | `tenants/<id>/vehicles/<uuid>` | `upload` (public, on the CDN) |
 | Tenant logo | `tenants/<id>/branding/<uuid>` | `upload` (public, on the CDN) |
 
 **Uploading** (`src/tenant/files.js`):
 
-1. The app asks the backend to sign an upload of one kind: `POST /api/v1/uploads { kind }`, with `kind` one of `document`, `inspection` or `bill`. The caller needs a permission that writes that record: `renters:create` or `renters:update` for a document, `rentals:checkin` or `rentals:return` for a photo, `costs:create` for a bill. The kind's module must be on.
-2. The backend chooses the public ID, delivery type and allowed formats (JPG, PNG, WebP and PDF; photos also HEIC). Photos get an incoming transformation: they're stored as JPEGs at most 2000 px on a side. The backend signs all of it with the API secret. The signature covers every parameter and is valid for one hour, so the browser can't change the folder or make a file public.
+1. The app asks the backend to sign an upload of one kind: `POST /api/v1/uploads { kind }`, with `kind` one of `document`, `inspection`, `bill` or `vehiclePhoto`. The caller needs a permission that writes that record: `renters:create` or `renters:update` for a document, `rentals:checkin` or `rentals:return` for an inspection photo, `costs:create` for a bill, `vehicles:create` or `vehicles:update` for a vehicle photo. The kind's module must be on.
+2. The backend chooses the public ID, delivery type and allowed formats (JPG, PNG, WebP and PDF; photos also HEIC). Photos get an incoming transformation: they're stored as JPEGs at most 2000 px on a side (vehicle photos 1600 px). The backend signs all of it with the API secret. The signature covers every parameter and is valid for one hour, so the browser can't change the folder or make a file public.
 3. The browser posts the file to Cloudinary's upload API with those fields.
-4. The app sends Cloudinary's response with the record: `file` on a renter document, `photos[].file` on an inspection, `billFile` on a cost. The backend checks the response signature and that the public ID is one of this tenant's, of that kind. Then it stores `{ publicId, resourceType, format, bytes, uploadedAt }` on the record.
+4. The app sends Cloudinary's response with the record: `file` on a renter document, `photos[].file` on an inspection, `billFile` on a cost, `thumbnail` on a vehicle. The backend checks the response signature and that the public ID is one of this tenant's, of that kind. Then it stores `{ publicId, resourceType, format, bytes, uploadedAt }` on the record.
 
 A scan or bill can also be attached to an existing record: `PUT /renters/:id/documents/:documentId/file` and `PUT /costs/:id/bill`. A file that's replaced is deleted.
+
+A vehicle photo is public, because the guest booking page shows it. The vehicle stores the file as `photo` and its CDN link as `thumbnail`, which responses carry; `thumbnail: null` removes it. Vehicles from before photo uploads may have a typed-in `thumbnail` URL and no `photo`.
 
 Super admins upload the logo from the config editor (`POST /api/platform/tenants/:id/uploads/logo`). It's public and stored at most 512 px. Its `secure_url` goes into `branding.logoUrl`, so the config schema didn't change. The guest portal signs document scans too ([below](#guest-portal)).
 
@@ -128,7 +131,7 @@ Super admins upload the logo from the config editor (`POST /api/platform/tenants
 
 **Storage use.** `usage.storageGb` is the sum of the `bytes` of the tenant's files, recounted whenever one is added or removed (`refreshStorageUsage`). Once it reaches `limits.storageGb`, signing refuses new uploads with a 409. `bytes` is what the upload response reports, so the limit is a plan limit, not a security boundary.
 
-**Deleting.** Deleting a cost deletes its bill, and replacing a file deletes the old one. The record changes first; if Cloudinary fails after that, the file is left over and the failure is logged. Deleting a tenant deletes every asset under `tenants/<tenantId>/` before its database, and stops if Cloudinary fails, so the deletion can be retried.
+**Deleting.** Deleting a cost deletes its bill, deleting a vehicle deletes its photo, and replacing a file deletes the old one. The record changes first; if Cloudinary fails after that, the file is left over and the failure is logged. Deleting a tenant deletes every asset under `tenants/<tenantId>/` before its database, and stops if Cloudinary fails, so the deletion can be retried.
 
 All Cloudinary calls go through `src/platform/storage.js`, as Clerk's go through `clerk.js`; tests swap in a fake (`test/helpers/fakeStorage.js`). Without `CLOUDINARY_URL`, signing and any record that carries a file respond 503 `storage_not_configured`; records without files still work. Cloudinary failures respond 502 `storage_unavailable`.
 
@@ -312,7 +315,7 @@ Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) c
 | `POST /vehicles` · `PATCH /vehicles/:id` · `DELETE /vehicles/:id` | `vehicles:create` · `vehicles:update` · `vehicles:delete` | Add (up to `limits.maxVehicles`), edit or send to maintenance, delete (only without history) |
 | `GET /vehicles/availability?startDate&endDate` | `rentals:create` | Each vehicle's availability for the dates, and why not |
 | `GET /renters` · `GET /renters/:id` | `renters:read` | Profiles with compliance gaps · a profile with its rentals |
-| `POST /uploads` | one of the kind's permissions | Sign a browser upload to Cloudinary (`{ kind: document \| inspection \| bill }`, see [Files](#files)) |
+| `POST /uploads` | one of the kind's permissions | Sign a browser upload to Cloudinary (`{ kind: document \| inspection \| bill \| vehiclePhoto }`, see [Files](#files)) |
 | `POST /renters` · `PATCH /renters/:id` · `POST /renters/:id/documents` | `renters:create` · `renters:update` | Register, edit, add a document (each document can carry its scan) |
 | `PUT /renters/:id/documents/:documentId/file` | `renters:update` | Attach or replace a document's scan |
 | `POST /renters/:id/documents/:documentId/verify` | `renters:documents:verify` | Mark a document checked |

@@ -84,7 +84,7 @@ Removing or renaming a key that published records use leaves those records point
   "vehicles": {
     "builtIn": {
       "year": { "label": "Year", "required": false },
-      "thumbnail": { "label": "Photo URL (https)", "active": false }
+      "thumbnail": { "label": "Photo", "active": false }
     },
     "custom": [
       { "key": "insuranceExpiry", "label": "Insurance expiry", "type": "date", "required": true },

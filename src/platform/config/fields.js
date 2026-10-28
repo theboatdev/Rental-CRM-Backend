@@ -31,7 +31,7 @@ const BUILT_IN_FIELDS = {
     },
     { key: 'depositAmount', label: 'Security deposit', type: 'money', showInList: true, note: 'Off: new vehicles take rules.defaultDepositAmount.' },
     { key: 'mileage', label: 'Odometer', type: 'distance', showInList: true, note: 'Off: readings still come from hand-overs and returns.' },
-    { key: 'thumbnail', label: 'Photo URL (https)', type: 'text', showInList: true },
+    { key: 'thumbnail', label: 'Photo', type: 'photo', showInList: true },
     { key: 'notes', label: 'Notes', type: 'longText' }
   ],
   renters: [

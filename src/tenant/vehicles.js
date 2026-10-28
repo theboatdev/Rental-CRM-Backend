@@ -1,12 +1,13 @@
 const { z } = require('zod');
 const { TRANSMISSIONS, FUEL_TYPES } = require('../models/tenant/enums');
 const { conflict } = require('../platform/errors');
-const { refreshVehicleUsage } = require('../platform/usage');
+const { refreshVehicleUsage, refreshStorageUsage } = require('../platform/usage');
 const { findOr404, can, moduleOn } = require('./common');
 const { presentVehicle, presentRental, presentCost, presentFuelLog } = require('./presenters');
 const { vehicleTotals, presentTotals } = require('./metrics');
 const { recordAudit } = require('./audit');
 const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields } = require('./fields');
+const { fileInput, discardFiles } = require('./files');
 
 const VEHICLE_FIELDS = {
   plateNumber: z.string().trim().min(2).max(20).transform((plate) => plate.toUpperCase()),
@@ -19,11 +20,13 @@ const VEHICLE_FIELDS = {
   secondaryDailyRate: z.number().positive().nullable(),
   depositAmount: z.number().min(0),
   mileage: z.number().int().min(0),
-  thumbnail: z.url({ protocol: /^https$/, error: 'Use an https:// image URL' }).nullable(),
   notes: z.string().trim().max(1000)
 };
 
-const VehicleInputSchema = (config) =>
+/** `thumbnail` takes an uploaded photo (POST /uploads { kind: 'vehiclePhoto' }), or null to remove it. */
+const photoInput = (ctx) => fileInput(ctx, 'vehiclePhoto').nullable();
+
+const VehicleInputSchema = (ctx) =>
   z.strictObject({
     ...VEHICLE_FIELDS,
     // Whether the fields that aren't core are needed comes from the config (see fields.js).
@@ -33,17 +36,26 @@ const VehicleInputSchema = (config) =>
     secondaryDailyRate: VEHICLE_FIELDS.secondaryDailyRate.optional(),
     depositAmount: VEHICLE_FIELDS.depositAmount.optional(),
     mileage: VEHICLE_FIELDS.mileage.default(0),
-    thumbnail: VEHICLE_FIELDS.thumbnail.optional(),
+    thumbnail: photoInput(ctx).optional(),
     notes: VEHICLE_FIELDS.notes.default(''),
-    customFields: customFieldsInput(config, 'vehicles')
+    customFields: customFieldsInput(ctx.config, 'vehicles')
   });
 
 /** RENTED is set by check-in and cleared by a return, never by hand. */
-const VehicleUpdateSchema = (config) =>
+const VehicleUpdateSchema = (ctx) =>
   z
-    .strictObject({ ...VEHICLE_FIELDS, status: z.enum(['AVAILABLE', 'MAINTENANCE']) })
+    .strictObject({ ...VEHICLE_FIELDS, thumbnail: photoInput(ctx), status: z.enum(['AVAILABLE', 'MAINTENANCE']) })
     .partial()
-    .extend({ customFields: customFieldsInput(config, 'vehicles', { update: true }) });
+    .extend({ customFields: customFieldsInput(ctx.config, 'vehicles', { update: true }) });
+
+/**
+ * A vehicle keeps an uploaded photo as `photo`, and its public link as
+ * `thumbnail`, which responses and the booking page show.
+ */
+function withPhoto(ctx, { thumbnail: photo, ...data }) {
+  if (photo === undefined) return data;
+  return { ...data, photo, thumbnail: photo && ctx.storage.publicUrl(photo) };
+}
 
 /**
  * The fleet: vehicle records, their status between rentals, and each
@@ -51,6 +63,7 @@ const VehicleUpdateSchema = (config) =>
  */
 function createVehicles({ platformDb }) {
   const refreshUsage = (ctx) => refreshVehicleUsage({ Tenant: platformDb.models.Tenant, tenantId: ctx.tenantId, Vehicle: ctx.models.Vehicle });
+  const refreshStorage = (ctx) => refreshStorageUsage({ Tenant: platformDb.models.Tenant, tenantId: ctx.tenantId, models: ctx.models });
   const plateTaken = (plate) => conflict(`Another vehicle already has the plate ${plate}`);
 
   return {
@@ -85,7 +98,7 @@ function createVehicles({ platformDb }) {
 
     /** Refused at the plan's `limits.maxVehicles`. The deposit defaults to `rules.defaultDepositAmount`. */
     async createVehicle(ctx, input) {
-      const data = parseRecord(VehicleInputSchema(ctx.config), input, ctx.config, 'vehicles');
+      const data = withPhoto(ctx, parseRecord(VehicleInputSchema(ctx), input, ctx.config, 'vehicles'));
       const { Vehicle } = ctx.models;
       const { maxVehicles } = ctx.config.limits;
       if ((await Vehicle.countDocuments()) >= maxVehicles) {
@@ -101,13 +114,14 @@ function createVehicles({ platformDb }) {
         throw error;
       }
       await refreshUsage(ctx);
+      if (data.photo) await refreshStorage(ctx);
       await recordAudit(ctx, { action: 'vehicle.created', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Added ${vehicle.plateNumber} (${vehicle.make} ${vehicle.model})` });
       return presentVehicle(vehicle.toObject());
     },
 
     async updateVehicle(ctx, vehicleId, input) {
       const vehicle = await findOr404(ctx.models.Vehicle, vehicleId, 'Vehicle');
-      const { customFields, ...changes } = parseRecord(VehicleUpdateSchema(ctx.config), input, ctx.config, 'vehicles', { update: true });
+      const { customFields, ...changes } = withPhoto(ctx, parseRecord(VehicleUpdateSchema(ctx), input, ctx.config, 'vehicles', { update: true }));
       if (changes.status && vehicle.status === 'RENTED') throw conflict("A rented vehicle's status changes when it's returned");
       if (changes.plateNumber && changes.plateNumber !== vehicle.plateNumber && (await ctx.models.Vehicle.exists({ plateNumber: changes.plateNumber }))) {
         throw plateTaken(changes.plateNumber);
@@ -117,8 +131,13 @@ function createVehicles({ platformDb }) {
       const filter = changes.status ? { _id: vehicle._id, status: { $ne: 'RENTED' } } : { _id: vehicle._id };
       const updated = await ctx.models.Vehicle.findOneAndUpdate(filter, updateWithCustomFields(changes, customFields), { returnDocument: 'after' }).lean();
       if (!updated) throw conflict('The vehicle was rented out in the meantime. Reload and try again.');
+      if ('photo' in changes && vehicle.photo?.publicId !== changes.photo?.publicId) {
+        await discardFiles(ctx, [vehicle.photo], 'vehiclePhoto');
+        await refreshStorage(ctx);
+      }
       const fields = [
-        ...Object.keys(changes).filter((key) => String(changes[key]) !== String(vehicle[key])),
+        // A new photo shows as a changed `thumbnail`.
+        ...Object.keys(changes).filter((key) => key !== 'photo' && String(changes[key]) !== String(vehicle[key])),
         ...changedCustomFields(vehicle, customFields)
       ];
       if (fields.length) {
@@ -139,6 +158,10 @@ function createVehicles({ platformDb }) {
       }
       await ctx.models.Vehicle.deleteOne({ _id: vehicle._id });
       await refreshUsage(ctx);
+      if (vehicle.photo) {
+        await discardFiles(ctx, [vehicle.photo], 'vehiclePhoto');
+        await refreshStorage(ctx);
+      }
       await recordAudit(ctx, { action: 'vehicle.deleted', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Deleted ${vehicle.plateNumber}` });
       return { id: String(vehicle._id), deleted: true };
     }

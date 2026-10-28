@@ -58,6 +58,10 @@ function createFakeStorage() {
       return `https://api.cloudinary.test/v1_1/fake/image/download?public_id=${encodeURIComponent(publicId)}&format=${format}&expires_at=${Math.floor(Date.now() / 1000) + 600}`;
     },
 
+    publicUrl({ publicId, format }) {
+      return `https://res.cloudinary.test/fake/image/upload/${publicId}.${format}`;
+    },
+
     async deleteAsset({ publicId }) {
       assets.delete(publicId);
       deleted.push(publicId);
