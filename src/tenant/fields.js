@@ -4,6 +4,7 @@ const { DEFAULT_FIELDS } = require('../platform/config/schema');
 const { invalid } = require('../platform/errors');
 const { zodIssues } = require('../platform/config/path');
 const { DateStringSchema } = require('./common');
+const { fieldFileInput, isStoredFile, discardFieldFiles } = require('./files');
 
 /**
  * The config's fields for vehicles, renters, rentals, payments and costs
@@ -14,7 +15,8 @@ const { DateStringSchema } = require('./common');
  *   rules live in each record's input schema.
  * - Custom fields (`custom`): a record keeps their values in its
  *   `customFields` object, keyed by field key: text as strings, dates as
- *   YYYY-MM-DD, selects as the option key.
+ *   YYYY-MM-DD, selects as the option key, files as stored files (the app
+ *   sends the upload response of a file signed for that field, see files.js).
  *
  * A field that's off takes no values, and records keep the values they have.
  */
@@ -81,7 +83,7 @@ function parseRecord(schema, input, config, section, { update = false, nested = 
   return data;
 }
 
-function valueSchema(field) {
+function valueSchema(ctx, section, field) {
   switch (field.type) {
     case 'text':
     case 'longText':
@@ -98,6 +100,8 @@ function valueSchema(field) {
       return field.required ? z.literal(true, { error: 'Must be ticked' }) : z.boolean();
     case 'select':
       return z.string().refine((key) => field.options.some((option) => option.key === key && option.active), { error: 'Pick one of the listed options' });
+    case 'file':
+      return fieldFileInput(ctx, section, field);
     default:
       throw new Error(`Unknown custom field type: ${field.type}`);
   }
@@ -113,15 +117,16 @@ function valueSchema(field) {
  *   clears a field, unless it's required.
  *
  * Values for fields that are off are ignored; keys that aren't fields of the section are rejected.
+ * `ctx` is the request's context: its config, and the tenant and storage that file values are checked against.
  */
-function customFieldsInput(config, section, { update = false } = {}) {
-  const fields = new Map(fieldsOf(config, section).custom.map((field) => [field.key, field]));
+function customFieldsInput(ctx, section, { update = false } = {}) {
+  const fields = new Map(fieldsOf(ctx.config, section).custom.map((field) => [field.key, field]));
 
   return z
     .record(z.string(), z.unknown())
     .prefault({})
-    .transform((input, ctx) => {
-      const issue = (key, message) => ctx.addIssue({ code: 'custom', message, path: [key], input });
+    .transform((input, refinement) => {
+      const issue = (key, message) => refinement.addIssue({ code: 'custom', message, path: [key], input });
       const set = {};
       const unset = [];
 
@@ -133,7 +138,7 @@ function customFieldsInput(config, section, { update = false } = {}) {
           if (update && field.required) issue(key, 'Required');
           else if (update) unset.push(key);
         } else {
-          const result = valueSchema(field).safeParse(value);
+          const result = valueSchema(ctx, section, field).safeParse(value);
           if (result.success) set[key] = result.data;
           else issue(key, result.error.issues[0].message);
         }
@@ -155,13 +160,47 @@ function updateWithCustomFields(changes, { set, unset }) {
   };
 }
 
+const sameValue = (a, b) => a === b || (isStoredFile(a) && isStoredFile(b) && a.publicId === b.publicId);
+
 /** Keys of the custom fields an update-mode result actually changes on `record`. */
 function changedCustomFields(record, { set, unset }) {
   const current = record.customFields ?? {};
   return [
-    ...Object.keys(set).filter((key) => current[key] !== set[key]),
+    ...Object.keys(set).filter((key) => !sameValue(current[key], set[key])),
     ...unset.filter((key) => current[key] !== undefined)
   ];
 }
 
-module.exports = { fieldsOf, builtInRules, parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields };
+/** The files among custom field values: a create-mode result, an update's `set`, or what a record stores. */
+const customFieldFiles = (values) => Object.values(values ?? {}).filter(isStoredFile);
+
+/** The files of `record` an update-mode result replaces or clears. */
+function replacedCustomFieldFiles(record, { set, unset }) {
+  const current = record.customFields ?? {};
+  return [...Object.keys(set).filter((key) => !sameValue(current[key], set[key])), ...unset]
+    .map((key) => current[key])
+    .filter(isStoredFile);
+}
+
+/**
+ * Once an update-mode result is saved on `record`: deletes the files it
+ * replaced or cleared. Returns whether the record's files changed, so the
+ * tenant's storage use needs a recount.
+ */
+async function discardReplacedFieldFiles(ctx, record, result) {
+  const replaced = replacedCustomFieldFiles(record, result);
+  await discardFieldFiles(ctx, replaced);
+  return replaced.length > 0 || customFieldFiles(result.set).length > 0;
+}
+
+module.exports = {
+  fieldsOf,
+  builtInRules,
+  parseRecord,
+  customFieldsInput,
+  updateWithCustomFields,
+  changedCustomFields,
+  customFieldFiles,
+  replacedCustomFieldFiles,
+  discardReplacedFieldFiles
+};

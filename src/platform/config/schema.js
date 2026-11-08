@@ -3,6 +3,7 @@ const { MODULES, MODULE_KEYS, TAB_MODULE_KEYS } = require('./modules');
 const { formatPath } = require('./path');
 const { FINANCIAL_FIELDS } = require('../rbac/financialFields');
 const { BUILT_IN_FIELDS, FIELD_SECTIONS } = require('./fields');
+const { RETURN_RECEIPT_DEFAULTS, RETURN_RECEIPT_PLACEHOLDERS, unknownPlaceholders } = require('./documents');
 
 const CONFIG_SCHEMA_VERSION = 1;
 const RESIDENT_TYPES = ['local', 'tourist'];
@@ -180,9 +181,11 @@ const RulesSchema = z.strictObject({
 // whose values records keep in `customFields`, keyed by field key
 // (src/tenant/fields.js).
 
-const CUSTOM_FIELD_TYPES = ['text', 'longText', 'number', 'date', 'boolean', 'select'];
+const CUSTOM_FIELD_TYPES = ['text', 'longText', 'number', 'date', 'boolean', 'select', 'file'];
 const CUSTOM_FIELD_KEY_PATTERN = /^[a-z][a-zA-Z0-9]{1,39}$/;
 const MAX_CUSTOM_FIELDS = 20;
+/** What a `file` field takes: `images` (stored as JPEGs), or `documents` (images or PDF). See src/tenant/files.js. */
+const FILE_FIELD_ACCEPTS = ['images', 'documents'];
 
 const customFieldKey = z
   .string()
@@ -213,7 +216,9 @@ const CustomFieldSchema = z.discriminatedUnion('type', [
     .refine((field) => field.min === null || field.max === null || field.min <= field.max, { error: 'Must be at least the minimum', path: ['max'] }),
   z.strictObject({ ...customFieldBase, type: z.literal('date') }),
   z.strictObject({ ...customFieldBase, type: z.literal('boolean') }),
-  z.strictObject({ ...customFieldBase, type: z.literal('select'), options: keyedList(ListItemSchema).max(50) })
+  z.strictObject({ ...customFieldBase, type: z.literal('select'), options: keyedList(ListItemSchema).max(50) }),
+  // One uploaded file per record. It counts towards limits.storageGb.
+  z.strictObject({ ...customFieldBase, type: z.literal('file'), accept: z.enum(FILE_FIELD_ACCEPTS).default('images') })
 ]);
 
 /** A built-in field's settings. A core field can be renamed and given help text, nothing else. */
@@ -255,6 +260,51 @@ const FieldsSchema = z.strictObject(Object.fromEntries(FIELD_SECTIONS.map((secti
 /** `fields` with every setting at its default. */
 const DEFAULT_FIELDS = FieldsSchema.parse(undefined);
 
+// Documents: what the PDFs the tenant app issues contain (./documents.js).
+
+/** Text that may use the return receipt's placeholders, and no other `{names}`. */
+const placeholderText = (min, max) =>
+  z
+    .string()
+    .trim()
+    .min(min)
+    .max(max)
+    .superRefine((text, ctx) => {
+      for (const name of unknownPlaceholders(text)) {
+        const known = RETURN_RECEIPT_PLACEHOLDERS.map((p) => `{${p.key}}`).join(', ');
+        ctx.addIssue({ code: 'custom', message: `{${name}} isn't a placeholder. Use ${known}` });
+      }
+    });
+
+const ReturnReceiptSchema = z
+  .strictObject({
+    /** Completed rentals can be downloaded as a PDF bill for the renter, confirming the return. */
+    enabled: z.boolean().default(true),
+    title: z.string().trim().min(1).max(60).default(RETURN_RECEIPT_DEFAULTS.title),
+    /** Lines printed under the business name: address, registration or tax number. */
+    issuerDetails: z.array(z.string().trim().min(1).max(120)).max(6).default([]),
+    /** Confirms the return, near the top of the receipt. */
+    returnStatement: placeholderText(1, 400).default(RETURN_RECEIPT_DEFAULTS.returnStatement),
+    showInspections: z.boolean().default(true),
+    /** Embeds the inspection photos (needs showInspections). They make the PDF larger. */
+    showInspectionPhotos: z.boolean().default(true),
+    /** The rental's payments; only for members with payments:read, and the totals show either way. */
+    showPayments: z.boolean().default(true),
+    /** The rental's custom fields (fields.rentals.custom) and notes. */
+    showCustomFields: z.boolean().default(true),
+    /** Signature lines for the renter and the business. */
+    showSignatures: z.boolean().default(true),
+    /** Terms or a thank-you, at the end. */
+    footer: placeholderText(0, 600).default(RETURN_RECEIPT_DEFAULTS.footer),
+    paperSize: z.enum(['A4', 'LETTER']).default('A4')
+  })
+  .prefault({});
+
+const DocumentsSchema = z.strictObject({ returnReceipt: ReturnReceiptSchema }).prefault({});
+
+/** `documents` with every setting at its default. */
+const DEFAULT_DOCUMENTS = DocumentsSchema.parse(undefined);
+
 const LimitsSchema = z.strictObject({
   maxVehicles: z.number().int().min(1).max(10_000),
   maxUsers: z.number().int().min(1).max(1_000),
@@ -275,6 +325,7 @@ const TenantConfigSchema = z
     lists: ListsSchema,
     rules: RulesSchema,
     fields: FieldsSchema,
+    documents: DocumentsSchema,
     limits: LimitsSchema
   })
   .superRefine((config, ctx) => {
@@ -363,7 +414,9 @@ module.exports = {
   LIST_KEY_PATTERN,
   CUSTOM_FIELD_TYPES,
   CUSTOM_FIELD_KEY_PATTERN,
+  FILE_FIELD_ACCEPTS,
   DEFAULT_FIELDS,
+  DEFAULT_DOCUMENTS,
   MAX_CUSTOM_FIELDS,
   TenantConfigSchema,
   parseTenantConfig,

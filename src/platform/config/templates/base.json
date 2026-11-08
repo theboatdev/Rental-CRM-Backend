@@ -83,5 +83,6 @@
     "touristPermitDocumentKeys": [],
     "codePrefixes": { "rental": "RNT", "booking": "BK", "receipt": "RCPT", "advance": "ADV", "renter": "CU" }
   },
+  "documents": { "returnReceipt": { "paperSize": "LETTER" } },
   "limits": { "maxVehicles": 25, "maxUsers": 5, "storageGb": 5 }
 }

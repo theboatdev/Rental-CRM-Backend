@@ -32,6 +32,8 @@ const rentalSchema = new Schema(
     depositAmount: { type: Number, required: true, min: 0 },
     paidAmount: { type: Number, default: 0, min: 0 }, // sum of non-voided payments, updated in the same transaction
     depositRefunded: { type: Boolean, default: false },
+    // Staff confirmed the renter had paid everything, usually at pickup. Cleared if the ledger later shows money owed.
+    fullPayment: { type: new Schema({ at: { type: Date, required: true }, by: { type: actorSchema } }, { _id: false }) },
     startMileage: { type: Number },
     endMileage: { type: Number },
     pickupInspection: { type: inspectionSchema },

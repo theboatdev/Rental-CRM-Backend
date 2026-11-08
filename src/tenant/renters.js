@@ -4,7 +4,7 @@ const { forbidden, notFound } = require('../platform/errors');
 const { parse, findOr404, nextCode, IdSchema, activeListKey, can, moduleOn } = require('./common');
 const { presentRenter, presentRental } = require('./presenters');
 const { recordAudit } = require('./audit');
-const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields } = require('./fields');
+const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields, customFieldFiles, discardReplacedFieldFiles } = require('./fields');
 const { fileInput, discardFiles } = require('./files');
 const { refreshStorageUsage } = require('../platform/usage');
 
@@ -41,11 +41,11 @@ const RenterInputSchema = (ctx) =>
     emergencyContact: RENTER_FIELDS.emergencyContact.optional(),
     notes: RENTER_FIELDS.notes.default(''),
     documents: z.array(DocumentInputSchema(ctx)).max(10).default([]),
-    customFields: customFieldsInput(ctx.config, 'renters')
+    customFields: customFieldsInput(ctx, 'renters')
   });
 
-const RenterUpdateSchema = (config) =>
-  z.strictObject(RENTER_FIELDS).partial().extend({ customFields: customFieldsInput(config, 'renters', { update: true }) });
+const RenterUpdateSchema = (ctx) =>
+  z.strictObject(RENTER_FIELDS).partial().extend({ customFields: customFieldsInput(ctx, 'renters', { update: true }) });
 
 const AttachFileSchema = (ctx) => z.strictObject({ file: fileInput(ctx, 'document') });
 
@@ -105,15 +105,16 @@ function createRenters({ platformDb }) {
       const data = parseRecord(RenterInputSchema(ctx), input, ctx.config, 'renters');
       assertCanVerify(ctx, data.documents);
       const renter = await insertRenter(ctx, { ...data, documents: data.documents.map((d) => withVerifier(ctx, d)) });
-      if (data.documents.some((d) => d.file)) await refreshStorage(ctx);
+      if (data.documents.some((d) => d.file) || customFieldFiles(data.customFields).length) await refreshStorage(ctx);
       await recordAudit(ctx, { action: 'renter.created', entityType: 'renter', entityId: String(renter._id), summary: `Registered ${renter.fullName} (${renter.profileId})` });
       return presentRenter(renter, ctx);
     },
 
     async updateRenter(ctx, renterId, input) {
       const renter = await findOr404(ctx.models.Renter, renterId, 'Renter');
-      const { customFields, ...changes } = parseRecord(RenterUpdateSchema(ctx.config), input, ctx.config, 'renters', { update: true });
+      const { customFields, ...changes } = parseRecord(RenterUpdateSchema(ctx), input, ctx.config, 'renters', { update: true });
       const updated = await ctx.models.Renter.findOneAndUpdate({ _id: renter._id }, updateWithCustomFields(changes, customFields), { returnDocument: 'after' }).lean();
+      if (await discardReplacedFieldFiles(ctx, renter, customFields)) await refreshStorage(ctx);
       const fields = [...Object.keys(changes), ...changedCustomFields(renter, customFields)];
       await recordAudit(ctx, { action: 'renter.updated', entityType: 'renter', entityId: String(renter._id), summary: `Updated ${renter.fullName}: ${fields.join(', ')}` });
       return presentRenter(updated, ctx);

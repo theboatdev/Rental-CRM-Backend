@@ -6,8 +6,8 @@ const { findOr404, can, moduleOn } = require('./common');
 const { presentVehicle, presentRental, presentCost, presentFuelLog } = require('./presenters');
 const { vehicleTotals, presentTotals } = require('./metrics');
 const { recordAudit } = require('./audit');
-const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields } = require('./fields');
-const { fileInput, discardFiles } = require('./files');
+const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields, customFieldFiles, discardReplacedFieldFiles } = require('./fields');
+const { fileInput, discardFiles, discardFieldFiles } = require('./files');
 
 const VEHICLE_FIELDS = {
   plateNumber: z.string().trim().min(2).max(20).transform((plate) => plate.toUpperCase()),
@@ -38,7 +38,7 @@ const VehicleInputSchema = (ctx) =>
     mileage: VEHICLE_FIELDS.mileage.default(0),
     thumbnail: photoInput(ctx).optional(),
     notes: VEHICLE_FIELDS.notes.default(''),
-    customFields: customFieldsInput(ctx.config, 'vehicles')
+    customFields: customFieldsInput(ctx, 'vehicles')
   });
 
 /** RENTED is set by check-in and cleared by a return, never by hand. */
@@ -46,7 +46,7 @@ const VehicleUpdateSchema = (ctx) =>
   z
     .strictObject({ ...VEHICLE_FIELDS, thumbnail: photoInput(ctx), status: z.enum(['AVAILABLE', 'MAINTENANCE']) })
     .partial()
-    .extend({ customFields: customFieldsInput(ctx.config, 'vehicles', { update: true }) });
+    .extend({ customFields: customFieldsInput(ctx, 'vehicles', { update: true }) });
 
 /**
  * A vehicle keeps an uploaded photo as `photo`, and its public link as
@@ -70,7 +70,7 @@ function createVehicles({ platformDb }) {
     /** Every vehicle, by plate, with its lifetime totals. */
     async listVehicles(ctx) {
       const [vehicles, totals] = await Promise.all([ctx.models.Vehicle.find().sort({ plateNumber: 1 }).lean(), vehicleTotals(ctx)]);
-      return vehicles.map((v) => ({ ...presentVehicle(v), stats: presentTotals(ctx, totals.of(v._id)) }));
+      return vehicles.map((v) => ({ ...presentVehicle(v, ctx), stats: presentTotals(ctx, totals.of(v._id)) }));
     },
 
     /** A vehicle with its totals and the history the caller may read: rentals, service costs, fuel. */
@@ -88,7 +88,7 @@ function createVehicles({ platformDb }) {
         history(can(ctx, 'fuel:read') && moduleOn(ctx, 'fuelLogs'), FuelLog.find({ vehicle: vehicle._id }).sort({ filledAt: -1 }))
       ]);
       return {
-        ...presentVehicle(vehicle),
+        ...presentVehicle(vehicle, ctx),
         stats: presentTotals(ctx, totals.of(vehicle._id)),
         rentals: rentals && rentals.map((r) => presentRental({ ...r, vehicle }, ctx)),
         costs: costs && costs.map((c) => presentCost({ ...c, vehicle }, ctx)),
@@ -114,9 +114,9 @@ function createVehicles({ platformDb }) {
         throw error;
       }
       await refreshUsage(ctx);
-      if (data.photo) await refreshStorage(ctx);
+      if (data.photo || customFieldFiles(data.customFields).length) await refreshStorage(ctx);
       await recordAudit(ctx, { action: 'vehicle.created', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Added ${vehicle.plateNumber} (${vehicle.make} ${vehicle.model})` });
-      return presentVehicle(vehicle.toObject());
+      return presentVehicle(vehicle.toObject(), ctx);
     },
 
     async updateVehicle(ctx, vehicleId, input) {
@@ -131,10 +131,10 @@ function createVehicles({ platformDb }) {
       const filter = changes.status ? { _id: vehicle._id, status: { $ne: 'RENTED' } } : { _id: vehicle._id };
       const updated = await ctx.models.Vehicle.findOneAndUpdate(filter, updateWithCustomFields(changes, customFields), { returnDocument: 'after' }).lean();
       if (!updated) throw conflict('The vehicle was rented out in the meantime. Reload and try again.');
-      if ('photo' in changes && vehicle.photo?.publicId !== changes.photo?.publicId) {
-        await discardFiles(ctx, [vehicle.photo], 'vehiclePhoto');
-        await refreshStorage(ctx);
-      }
+      const photoChanged = 'photo' in changes && vehicle.photo?.publicId !== changes.photo?.publicId;
+      if (photoChanged) await discardFiles(ctx, [vehicle.photo], 'vehiclePhoto');
+      const filesChanged = await discardReplacedFieldFiles(ctx, vehicle, customFields);
+      if (photoChanged || filesChanged) await refreshStorage(ctx);
       const fields = [
         // A new photo shows as a changed `thumbnail`.
         ...Object.keys(changes).filter((key) => key !== 'photo' && String(changes[key]) !== String(vehicle[key])),
@@ -143,7 +143,7 @@ function createVehicles({ platformDb }) {
       if (fields.length) {
         await recordAudit(ctx, { action: 'vehicle.updated', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Updated ${updated.plateNumber}: ${fields.join(', ')}` });
       }
-      return presentVehicle(updated);
+      return presentVehicle(updated, ctx);
     },
 
     /** Only a vehicle without rentals, costs or fuel logs can be deleted, so history never loses its vehicle. */
@@ -158,8 +158,10 @@ function createVehicles({ platformDb }) {
       }
       await ctx.models.Vehicle.deleteOne({ _id: vehicle._id });
       await refreshUsage(ctx);
-      if (vehicle.photo) {
+      const fieldFiles = customFieldFiles(vehicle.customFields);
+      if (vehicle.photo || fieldFiles.length) {
         await discardFiles(ctx, [vehicle.photo], 'vehiclePhoto');
+        await discardFieldFiles(ctx, fieldFiles);
         await refreshStorage(ctx);
       }
       await recordAudit(ctx, { action: 'vehicle.deleted', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Deleted ${vehicle.plateNumber}` });

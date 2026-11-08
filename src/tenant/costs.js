@@ -4,13 +4,13 @@ const { refreshStorageUsage } = require('../platform/usage');
 const { parse, findOr404, todayIn, toDate, DateStringSchema, IdSchema, activeListKey } = require('./common');
 const { presentCost, presentFuelLog } = require('./presenters');
 const { recordAudit } = require('./audit');
-const { parseRecord, customFieldsInput } = require('./fields');
-const { fileInput, discardFiles } = require('./files');
+const { parseRecord, customFieldsInput, customFieldFiles } = require('./fields');
+const { fileInput, discardFiles, discardFieldFiles } = require('./files');
 
-const CostInputSchema = (ctx, config = ctx.config) =>
+const CostInputSchema = (ctx) =>
   z.strictObject({
     vehicleId: IdSchema,
-    category: activeListKey(config, 'costCategories'),
+    category: activeListKey(ctx.config, 'costCategories'),
     title: z.string().trim().min(2).max(200),
     amount: z.number().positive(),
     incurredAt: DateStringSchema.optional(),
@@ -20,7 +20,7 @@ const CostInputSchema = (ctx, config = ctx.config) =>
     billFile: fileInput(ctx, 'bill').optional(),
     odometer: z.number().int().min(0).optional(),
     notes: z.string().trim().max(1000).default(''),
-    customFields: customFieldsInput(config, 'costs')
+    customFields: customFieldsInput(ctx, 'costs')
   });
 
 const AttachBillSchema = (ctx) => z.strictObject({ billFile: fileInput(ctx, 'bill') });
@@ -79,7 +79,7 @@ function createCosts({ platformDb }) {
         createdBy: ctx.actor
       });
       await raiseMileage(ctx, vehicle._id, data.odometer);
-      if (data.billFile) await refreshStorage(ctx);
+      if (data.billFile || customFieldFiles(data.customFields).length) await refreshStorage(ctx);
       await recordAudit(ctx, { action: 'cost.created', entityType: 'cost', entityId: String(cost._id), summary: `Logged ${data.amount} for ${vehicle.plateNumber}: ${data.title}` });
       return presentCost({ ...cost.toObject(), vehicle }, ctx);
     },
@@ -100,12 +100,14 @@ function createCosts({ platformDb }) {
       return presentCost({ ...cost, billFile }, ctx);
     },
 
-    /** Deletes the entry and its bill. */
+    /** Deletes the entry, its bill and the files of its custom fields. */
     async deleteCost(ctx, costId) {
       const cost = await findOr404(ctx.models.VehicleCost, costId, 'Cost', { populate: { vehicle: 'plateNumber' } });
       await ctx.models.VehicleCost.deleteOne({ _id: cost._id });
-      if (cost.billFile) {
+      const fieldFiles = customFieldFiles(cost.customFields);
+      if (cost.billFile || fieldFiles.length) {
         await discardFiles(ctx, [cost.billFile], 'bill');
+        await discardFieldFiles(ctx, fieldFiles);
         await refreshStorage(ctx);
       }
       await recordAudit(ctx, {

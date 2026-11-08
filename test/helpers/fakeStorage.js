@@ -6,9 +6,12 @@
  *   signature, stores the file and returns the response, in the shape the
  *   apps send back with a record (`publicId`, `version`, `signature`, …).
  * - `verifyUpload` accepts only signatures `upload` made.
+ * - `readFile` returns a 1×1 PNG for any stored file.
  * - `assets`, `deleted` and `deletedPrefixes` show what's stored and what was removed.
  */
 const crypto = require('node:crypto');
+
+const PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 
 const SECRET = 'fake-cloudinary-secret';
 const sign = (params) =>
@@ -56,6 +59,11 @@ function createFakeStorage() {
 
     downloadUrl({ publicId, format }) {
       return `https://api.cloudinary.test/v1_1/fake/image/download?public_id=${encodeURIComponent(publicId)}&format=${format}&expires_at=${Math.floor(Date.now() / 1000) + 600}`;
+    },
+
+    async readFile({ publicId }) {
+      if (!assets.has(publicId)) throw new Error(`Not found (fake Cloudinary): ${publicId}`);
+      return PIXEL_PNG;
     },
 
     publicUrl({ publicId, format }) {

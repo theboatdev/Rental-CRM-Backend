@@ -29,9 +29,10 @@ const OPEN_ROUTES = ['/me', '/config'];
  * `clerk` is the Clerk gateway, for invitations and memberships;
  * `memberSync`, when given, creates a missing member from their Clerk membership;
  * `storage` is the file storage gateway (src/platform/storage.js), reached as `ctx.storage`;
- * `digests` sends the WhatsApp digest (src/platform/digests.js).
+ * `digests` sends the WhatsApp digest (src/platform/digests.js);
+ * `loadLogo` fetches `branding.logoUrl` for PDFs (defaults to src/platform/documents/images.js).
  */
-function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, clerk, memberSync, storage = createStorageGateway({}), digests, cacheTtlMs }) {
+function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, clerk, memberSync, storage = createStorageGateway({}), digests, loadLogo, cacheTtlMs }) {
   const team = createTeam({ clerk, platformDb });
   const roles = createRoles({ clerk });
   const router = express.Router();
@@ -100,7 +101,7 @@ function createTenantRouter({ tenantAuth, platformDb, getTenantDb, directory, cl
     )
   );
 
-  registerOperationRoutes(router, { platformDb, digests });
+  registerOperationRoutes(router, { platformDb, digests, loadLogo });
 
   return router;
 }

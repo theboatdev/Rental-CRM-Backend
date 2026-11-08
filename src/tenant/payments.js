@@ -2,19 +2,20 @@ const { z } = require('zod');
 const { PAYMENT_TYPES } = require('../models/tenant/enums');
 const { conflict, invalid } = require('../platform/errors');
 const { parse, findOr404, inTransaction, lock, nextCode, todayIn, IdSchema, activeListKey } = require('./common');
-const { presentPayment } = require('./presenters');
+const { presentPayment, owedOn } = require('./presenters');
 const { recordAudit } = require('./audit');
-const { parseRecord, customFieldsInput } = require('./fields');
+const { parseRecord, customFieldsInput, customFieldFiles } = require('./fields');
+const { refreshStorageUsage } = require('../platform/usage');
 
-const PaymentInputSchema = (config) =>
+const PaymentInputSchema = (ctx) =>
   z.strictObject({
     rentalId: IdSchema,
     type: z.enum(PAYMENT_TYPES),
-    method: activeListKey(config, 'paymentMethods'),
+    method: activeListKey(ctx.config, 'paymentMethods'),
     amount: z.number().positive(),
     transactionReference: z.string().trim().max(80).optional(),
     notes: z.string().trim().max(500).default(''),
-    customFields: customFieldsInput(config, 'payments')
+    customFields: customFieldsInput(ctx, 'payments')
   });
 
 const VoidInputSchema = z.strictObject({ reason: z.string().trim().min(3).max(300) });
@@ -23,6 +24,20 @@ const POPULATE = { rental: 'code', renter: 'profileId fullName phone' };
 
 /** A refund takes money out of what the renter has paid; everything else adds to it. */
 const signOf = (type) => (type === 'REFUND' ? -1 : 1);
+
+/**
+ * Inside a transaction, after a refund or a void: clears the rental's full
+ * payment confirmation if it now owes money, so the confirmation never
+ * contradicts the ledger. Returns whether it was cleared.
+ */
+async function clearFullPaymentIfOwed(ctx, session, rentalId) {
+  const rental = await ctx.models.Rental.findById(rentalId).session(session).lean();
+  if (!rental?.fullPayment?.at || owedOn(rental) <= 0) return false;
+  await ctx.models.Rental.updateOne({ _id: rental._id }, { $unset: { fullPayment: '' } }, { session });
+  return true;
+}
+
+const FULL_PAYMENT_CLEARED = '; the full payment confirmation was cleared, as it now owes money';
 
 /**
  * Inside a transaction (with the rental locked): records a payment against a
@@ -76,10 +91,15 @@ async function recordPaymentIn(ctx, session, rental, { type, method, amount, tra
   return payment;
 }
 
-/** The payment ledger: receipts, advances, deposits and refunds. Entries are voided, never deleted. */
-function createPayments() {
+/**
+ * The payment ledger: receipts, advances, deposits and refunds. Entries are
+ * voided, never deleted, so the files of their custom fields stay too.
+ */
+function createPayments({ platformDb }) {
+  const refreshStorage = (ctx) => refreshStorageUsage({ Tenant: platformDb.models.Tenant, tenantId: ctx.tenantId, models: ctx.models });
+
   async function getPayment(ctx, paymentId) {
-    return presentPayment(await findOr404(ctx.models.Payment, paymentId, 'Payment', { populate: POPULATE }));
+    return presentPayment(await findOr404(ctx.models.Payment, paymentId, 'Payment', { populate: POPULATE }), ctx);
   }
 
   return {
@@ -88,11 +108,11 @@ function createPayments() {
       const filter = IdSchema.safeParse(rentalId).success ? { rental: rentalId } : {};
       let query = ctx.models.Payment.find(filter).sort({ paidAt: -1 });
       for (const [path, select] of Object.entries(POPULATE)) query = query.populate(path, select);
-      return (await query.lean()).map(presentPayment);
+      return (await query.lean()).map((p) => presentPayment(p, ctx));
     },
 
     async recordPayment(ctx, input) {
-      const data = parseRecord(PaymentInputSchema(ctx.config), input, ctx.config, 'payments');
+      const data = parseRecord(PaymentInputSchema(ctx), input, ctx.config, 'payments');
       let paymentId;
       let summary;
       await inTransaction(ctx, async (session) => {
@@ -101,7 +121,9 @@ function createPayments() {
         const payment = await recordPaymentIn(ctx, session, rental, data);
         paymentId = payment._id;
         summary = `${payment.receiptNumber}: ${data.type} of ${data.amount} for ${rental.code}`;
+        if (data.type === 'REFUND' && (await clearFullPaymentIfOwed(ctx, session, rental._id))) summary += FULL_PAYMENT_CLEARED;
       });
+      if (customFieldFiles(data.customFields).length) await refreshStorage(ctx);
       await recordAudit(ctx, { action: 'payment.recorded', entityType: 'payment', entityId: String(paymentId), summary });
       return getPayment(ctx, String(paymentId));
     },
@@ -121,6 +143,7 @@ function createPayments() {
         );
         await ctx.models.Rental.updateOne({ _id: payment.rental }, { $inc: { paidAmount: -signOf(payment.type) * payment.amount } }, { session });
         summary = `Voided ${payment.receiptNumber}: ${reason}`;
+        if (await clearFullPaymentIfOwed(ctx, session, payment.rental)) summary += FULL_PAYMENT_CLEARED;
       });
       await recordAudit(ctx, { action: 'payment.voided', entityType: 'payment', entityId: String(paymentId), summary });
       return getPayment(ctx, paymentId);

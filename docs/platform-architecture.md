@@ -112,14 +112,16 @@ Files are stored in **Cloudinary**: one product environment for the platform, wi
 | Inspection photos | `tenants/<id>/inspections/<uuid>` | `authenticated` |
 | Service bills | `tenants/<id>/bills/<uuid>` | `authenticated` |
 | Vehicle photos | `tenants/<id>/vehicles/<uuid>` | `upload` (public, on the CDN) |
+| Files of `file` custom fields | `tenants/<id>/fields/<section>/<field key>/<uuid>` | `authenticated` |
 | Tenant logo | `tenants/<id>/branding/<uuid>` | `upload` (public, on the CDN) |
 
 **Uploading** (`src/tenant/files.js`):
 
 1. The app asks the backend to sign an upload of one kind: `POST /api/v1/uploads { kind }`, with `kind` one of `document`, `inspection`, `bill` or `vehiclePhoto`. The caller needs a permission that writes that record: `renters:create` or `renters:update` for a document, `rentals:checkin` or `rentals:return` for an inspection photo, `costs:create` for a bill, `vehicles:create` or `vehicles:update` for a vehicle photo. The kind's module must be on.
+   For a `file` custom field, it's `POST /api/v1/uploads { kind: "customField", section, field }`: an active file field of that record type, whose module is on. The caller needs `vehicles:create` or `vehicles:update`, `renters:create` or `renters:update`, `rentals:create`, `payments:record` or `costs:create`. The field's `accept` sets the formats: `images` are stored like inspection photos, `documents` take PDFs too.
 2. The backend chooses the public ID, delivery type and allowed formats (JPG, PNG, WebP and PDF; photos also HEIC). Photos get an incoming transformation: they're stored as JPEGs at most 2000 px on a side (vehicle photos 1600 px). The backend signs all of it with the API secret. The signature covers every parameter and is valid for one hour, so the browser can't change the folder or make a file public.
 3. The browser posts the file to Cloudinary's upload API with those fields.
-4. The app sends Cloudinary's response with the record: `file` on a renter document, `photos[].file` on an inspection, `billFile` on a cost, `thumbnail` on a vehicle. The backend checks the response signature and that the public ID is one of this tenant's, of that kind. Then it stores `{ publicId, resourceType, format, bytes, uploadedAt }` on the record.
+4. The app sends Cloudinary's response with the record: `file` on a renter document, `photos[].file` on an inspection, `billFile` on a cost, `thumbnail` on a vehicle, `customFields.<key>` for a file field. The backend checks the response signature and that the public ID is one of this tenant's, of that kind (or of that field, in a format its `accept` still takes). Then it stores `{ publicId, resourceType, format, bytes, uploadedAt }` on the record.
 
 A scan or bill can also be attached to an existing record: `PUT /renters/:id/documents/:documentId/file` and `PUT /costs/:id/bill`. A file that's replaced is deleted.
 
@@ -127,11 +129,11 @@ A vehicle photo is public, because the guest booking page shows it. The vehicle 
 
 Super admins upload the logo from the config editor (`POST /api/platform/tenants/:id/uploads/logo`). It's public and stored at most 512 px. Its `secure_url` goes into `branding.logoUrl`, so the config schema didn't change. The guest portal signs document scans too ([below](#guest-portal)).
 
-**Reading.** Cloudinary's signed delivery URLs never expire, and expiring tokens need its Advanced plan. So `authenticated` files are only reached through `private_download_url` links that expire after 10 minutes. Responses carry them as `file.url` (`fileView`), after the tenant check and only for callers with the record's read permission: `renters:read`, `rentals:read` or `costs:read`. Everyone else gets `url: null`. These links skip the CDN, count double bandwidth and can't carry transformations, which is why photos are resized on upload. If volumes grow, token-based URLs on a paid plan are the upgrade.
+**Reading.** Cloudinary's signed delivery URLs never expire, and expiring tokens need its Advanced plan. So `authenticated` files are only reached through `private_download_url` links that expire after 10 minutes. Responses carry them as `file.url` (`fileView`), after the tenant check and only for callers with the record's read permission: `renters:read`, `rentals:read` or `costs:read`, and for custom field files also `vehicles:read` or `payments:read`. Everyone else gets `url: null`. These links skip the CDN, count double bandwidth and can't carry transformations, which is why photos are resized on upload. If volumes grow, token-based URLs on a paid plan are the upgrade.
 
 **Storage use.** `usage.storageGb` is the sum of the `bytes` of the tenant's files, recounted whenever one is added or removed (`refreshStorageUsage`). Once it reaches `limits.storageGb`, signing refuses new uploads with a 409. `bytes` is what the upload response reports, so the limit is a plan limit, not a security boundary.
 
-**Deleting.** Deleting a cost deletes its bill, deleting a vehicle deletes its photo, and replacing a file deletes the old one. The record changes first; if Cloudinary fails after that, the file is left over and the failure is logged. Deleting a tenant deletes every asset under `tenants/<tenantId>/` before its database, and stops if Cloudinary fails, so the deletion can be retried.
+**Deleting.** Deleting a cost deletes its bill, deleting a vehicle deletes its photo, either deletes the files of its custom fields, and replacing or clearing a file deletes the old one. Payments are never deleted, so their files stay. The record changes first; if Cloudinary fails after that, the file is left over and the failure is logged. Deleting a tenant deletes every asset under `tenants/<tenantId>/` before its database, and stops if Cloudinary fails, so the deletion can be retried.
 
 All Cloudinary calls go through `src/platform/storage.js`, as Clerk's go through `clerk.js`; tests swap in a fake (`test/helpers/fakeStorage.js`). Without `CLOUDINARY_URL`, signing and any record that carries a file respond 503 `storage_not_configured`; records without files still work. Cloudinary failures respond 502 `storage_unavailable`.
 
@@ -265,12 +267,13 @@ The backend sends each tenant's weekly digest from the tenant's own WhatsApp Bus
 
 ## Platform API
 
-The super admin API, under `/api/platform`. Every route requires a Clerk session with the `super_admin` platform role. Tenants, configs, jobs and the audit log are stored in the platform database (`src/platform/service.js`). `/meta` and `/config/validate` don't need the database; the other routes respond 503 while it's unavailable.
+The super admin API, under `/api/platform`. Every route requires a Clerk session with the `super_admin` platform role. Tenants, configs, jobs and the audit log are stored in the platform database (`src/platform/service.js`). `/meta`, `/config/validate` and `/documents/return-receipt/preview` don't need the database; the other routes respond 503 while it's unavailable.
 
 | Method and path | Purpose |
 |---|---|
-| `GET /meta` | Config JSON Schema, modules, templates, tenant statuses, provisioning steps, permissions, system roles |
+| `GET /meta` | Config JSON Schema, modules, templates, tenant statuses, provisioning steps, permissions, system roles, the placeholders documents can use |
 | `POST /config/validate` | Validate any config (`{ config }` or `{ configText }`), optionally against a `baseline` |
+| `POST /documents/return-receipt/preview` | The return receipt of a sample rental under a config (`{ config }` or `{ configText }`), as a PDF. 422 with the issues if the config doesn't validate |
 | `GET /stats` | Tenant counts by status, total members and vehicles, failed provisioning jobs |
 | `GET /tenants` · `POST /tenants` | List tenants · create and provision one |
 | `GET /tenants/:id` · `PATCH /tenants/:id/status` | Tenant detail · suspend, reactivate or archive |
@@ -322,7 +325,9 @@ Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) c
 | `GET /rentals?status&vehicleId&renterId` · `GET /rentals/:id` | `rentals:read` | Rentals, newest first · one with its payments |
 | `POST /rentals` | `rentals:create` | Book (`advance` needs `payments:record`; `pickup` hands over at once and needs `rentals:checkin`) |
 | `PATCH /rentals/:id` | `rentals:create` | Edit a rental's notes and custom fields |
-| `POST /rentals/:id/check-in` · `/return` · `/cancel` | `rentals:checkin` · `rentals:return` · `rentals:cancel` | Hand over, record the return (both with a photo per inspection point), cancel a booking |
+| `GET /rentals/:id/return-receipt` | `rentals:read` | A completed rental's return receipt: the PDF bill for the renter, confirming the return (`documents.returnReceipt`; 404 when it's off, 409 before the return). Payments only appear for `payments:read` |
+| `POST /rentals/:id/check-in` · `/return` · `/cancel` | `rentals:checkin` · `rentals:return` · `rentals:cancel` | Hand over, record the return (both with a photo per inspection point), cancel a booking. The hand-over takes `confirmFullPayment: true` to confirm the renter paid the full amount (also on a booking's `pickup`) |
+| `POST /rentals/:id/full-payment` | `rentals:checkin` or `payments:record` | Confirm an active or completed rental is paid in full, after the hand-over (409 if it's still owed or already confirmed) |
 | `GET /calendar?month=YYYY-MM` | `calendar:view` | A month of the fleet schedule |
 | `GET /payments` · `POST /payments` · `POST /payments/:id/void` | `payments:read` · `payments:record` · `payments:void` | The ledger · record · void with a reason |
 | `GET /costs` · `POST /costs` · `DELETE /costs/:id` | `costs:read` · `costs:create` · `costs:delete` | Running costs, with their bills (required by `modules.costs.requireBillUpload`); deleting a cost deletes its bill |
@@ -330,6 +335,8 @@ Under `/api/v1`, behind the [request lifecycle](#request-lifecycle-tenant-api) c
 | `GET /fuel-logs` · `POST /fuel-logs` | `fuel:read` · `fuel:create` | Fuel fill-ups |
 | `GET /whatsapp/digest` | `whatsapp:view` | The weekly digest text, recipients and schedule, and `delivery`: whether WhatsApp is connected and the latest runs |
 | `POST /whatsapp/digest/send` | `whatsapp:manage` | Send the digest now, as the caller sees it |
+
+**Full payment.** Staff confirm a rental is paid in full at the hand-over (`confirmFullPayment`) or later, and the rental keeps who and when (`fullPayment`). With the payments module on, the ledger must agree: nothing may be owed (the rental and its deposit, less what's been paid; a refunded deposit no longer counts), or the request is refused with the amount still to pay. A void or refund that leaves money owed clears the confirmation, so it never contradicts the ledger. Without the payments module, the confirmation is staff's word.
 
 Clerk failures during these calls return 422 with Clerk's message when Clerk rejected the input, and 502 `clerk_unavailable` otherwise.
 

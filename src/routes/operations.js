@@ -1,4 +1,4 @@
-const { handle } = require('./handle');
+const { handle, handleFile } = require('./handle');
 const { requireModule, requirePermission, requireAnyPermission } = require('../middleware/tenantContext');
 const { contextOf } = require('../tenant/context');
 const { createVehicles } = require('../tenant/vehicles');
@@ -8,6 +8,7 @@ const { createPayments } = require('../tenant/payments');
 const { createCosts } = require('../tenant/costs');
 const { createDashboard } = require('../tenant/dashboard');
 const { createUploads, UPLOAD_PERMISSIONS } = require('../tenant/files');
+const { createReceipts } = require('../tenant/receipts');
 
 /** `requireModule` then `requirePermission`, so a disabled module is a 404 before permissions are checked. */
 const guard = (moduleKey, permission) => [requireModule(moduleKey), requirePermission(permission)];
@@ -16,14 +17,15 @@ const guard = (moduleKey, permission) => [requireModule(moduleKey), requirePermi
  * The day-to-day operations routes of the tenant API, registered on its
  * router (after the tenant chain). `digests` sends the WhatsApp digest (src/platform/digests.js).
  */
-function registerOperationRoutes(router, { platformDb, digests }) {
+function registerOperationRoutes(router, { platformDb, digests, loadLogo }) {
   const vehicles = createVehicles({ platformDb });
   const renters = createRenters({ platformDb });
   const rentals = createRentals({ platformDb });
-  const payments = createPayments();
+  const payments = createPayments({ platformDb });
   const costs = createCosts({ platformDb });
   const dashboard = createDashboard();
   const uploads = createUploads({ platformDb });
+  const receipts = createReceipts(loadLogo ? { loadLogo } : {});
   const query = (req) => req.query;
 
   // Signs a browser upload to Cloudinary. Each kind checks its own module and permissions (files.js).
@@ -62,6 +64,15 @@ function registerOperationRoutes(router, { platformDb, digests }) {
   router.post('/rentals/:id/check-in', guard('rentals', 'rentals:checkin'), handle((req) => rentals.checkIn(contextOf(req), req.params.id, req.body)));
   router.post('/rentals/:id/return', guard('rentals', 'rentals:return'), handle((req) => rentals.returnRental(contextOf(req), req.params.id, req.body)));
   router.post('/rentals/:id/cancel', guard('rentals', 'rentals:cancel'), handle((req) => rentals.cancel(contextOf(req), req.params.id)));
+  // Confirms the full amount was paid after the hand-over (at the hand-over, check-in takes confirmFullPayment).
+  router.post(
+    '/rentals/:id/full-payment',
+    requireModule('rentals'),
+    requireAnyPermission('rentals:checkin', 'payments:record'),
+    handle((req) => rentals.confirmFullPayment(contextOf(req), req.params.id))
+  );
+  // The PDF bill of a completed rental, confirming the return (documents.returnReceipt).
+  router.get('/rentals/:id/return-receipt', guard('rentals', 'rentals:read'), handleFile((req) => receipts.returnReceipt(contextOf(req), req.params.id)));
 
   router.get('/calendar', guard('calendar', 'calendar:view'), handle((req) => rentals.calendar(contextOf(req), query(req))));
 

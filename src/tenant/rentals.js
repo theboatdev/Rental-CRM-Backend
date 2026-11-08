@@ -18,10 +18,10 @@ const {
   can,
   moduleOn
 } = require('./common');
-const { presentRental, presentPayment, vehicleRef } = require('./presenters');
+const { presentRental, presentPayment, vehicleRef, owedOn } = require('./presenters');
 const { recordPaymentIn } = require('./payments');
 const { recordAudit } = require('./audit');
-const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields } = require('./fields');
+const { parseRecord, customFieldsInput, updateWithCustomFields, changedCustomFields, customFieldFiles, discardReplacedFieldFiles } = require('./fields');
 const { fileInput } = require('./files');
 const { refreshStorageUsage } = require('../platform/usage');
 
@@ -46,9 +46,12 @@ const InspectionSchema = (ctx) =>
     notes: z.string().trim().max(1000).default('')
   });
 
+/** A hand-over: the pickup inspection, and whether staff confirm the renter has paid the full amount. */
+const CheckInSchema = (ctx) => InspectionSchema(ctx).extend({ confirmFullPayment: z.boolean().default(false) });
+
 const ReturnSchema = (ctx) => z.strictObject({ ...InspectionSchema(ctx).shape, odometer: z.number().int().min(0) });
 
-const ReservationSchema = (ctx, config = ctx.config) =>
+const ReservationSchema = (ctx) =>
   z.strictObject({
     vehicleId: IdSchema,
     renterId: IdSchema,
@@ -60,21 +63,21 @@ const ReservationSchema = (ctx, config = ctx.config) =>
     advance: z
       .strictObject({
         amount: z.number().positive(),
-        method: activeListKey(config, 'paymentMethods'),
+        method: activeListKey(ctx.config, 'paymentMethods'),
         transactionReference: z.string().trim().max(80).optional(),
         notes: z.string().trim().max(500).optional(),
-        customFields: customFieldsInput(config, 'payments')
+        customFields: customFieldsInput(ctx, 'payments')
       })
       .optional(),
     notes: z.string().trim().max(1000).default(''),
-    customFields: customFieldsInput(config, 'rentals'),
+    customFields: customFieldsInput(ctx, 'rentals'),
     // Hand the vehicle over straight away (needs rentals:checkin): booking and check-in in one step.
-    pickup: InspectionSchema(ctx).optional()
+    pickup: CheckInSchema(ctx).optional()
   });
 
 /** Notes and custom fields stay editable whatever the rental's status; dates and amounts don't change here. */
-const RentalUpdateSchema = (config) =>
-  z.strictObject({ notes: z.string().trim().max(1000).optional(), customFields: customFieldsInput(config, 'rentals', { update: true }) });
+const RentalUpdateSchema = (ctx) =>
+  z.strictObject({ notes: z.string().trim().max(1000).optional(), customFields: customFieldsInput(ctx, 'rentals', { update: true }) });
 
 const AvailabilityQuerySchema = z.strictObject({ startDate: DateStringSchema, endDate: DateStringSchema, excludeRentalId: IdSchema.optional() });
 
@@ -128,6 +131,22 @@ function inspectionOf(ctx, input, { required, odometer }) {
 }
 
 const hasPhotos = (inspection) => inspection?.photos.some((photo) => photo.file);
+
+/**
+ * The caller's confirmation that a rental is paid in full. With the payments
+ * module on, the ledger must agree: nothing may be owed. Without it, the
+ * confirmation is staff's word. `path` reports a refusal against a form field.
+ */
+function fullPaymentBy(ctx, rental, { path } = {}) {
+  const owed = owedOn(rental);
+  if (moduleOn(ctx, 'payments') && owed > 0) {
+    const { dateLocale, currency } = ctx.config.locale;
+    const amount = new Intl.NumberFormat(dateLocale, { style: 'currency', currency, maximumFractionDigits: 0 }).format(owed);
+    const message = `${amount} is still to be paid for ${rental.code}. Record the payment, then confirm the full amount.`;
+    throw path ? invalid(message, [{ path, message: `${amount} still to be paid` }]) : conflict(message);
+  }
+  return { at: new Date(), by: ctx.actor };
+}
 
 /** A booking's length in days, after checking its dates against the tenant's rules. */
 function bookingDays(ctx, { startDate, endDate }) {
@@ -205,14 +224,15 @@ function createRentals({ platformDb }) {
       throw invalid(`The odometer can't be below the vehicle's last reading (${vehicle.mileage})`, [{ path: 'odometer', message: 'Below the last reading' }]);
     }
     const pickupInspection = inspectionOf(ctx, input, { required: ctx.config.modules.rentals.requirePickupInspection, odometer });
+    const fullPayment = input.confirmFullPayment ? fullPaymentBy(ctx, rental, { path: input.fullPaymentPath ?? 'confirmFullPayment' }) : null;
     const code = await nextCode(ctx, { prefix: ctx.config.rules.codePrefixes.rental, sequence: 'rental', year: today.slice(0, 4), session });
     await ctx.models.Rental.updateOne(
       { _id: rental._id, status: 'RESERVED' },
-      { $set: { status: 'ACTIVE', code, bookingCode: rental.code, startMileage: odometer, pickupInspection } },
+      { $set: { status: 'ACTIVE', code, bookingCode: rental.code, startMileage: odometer, pickupInspection, ...(fullPayment ? { fullPayment } : {}) } },
       { session }
     );
     await ctx.models.Vehicle.updateOne({ _id: vehicle._id }, { $set: { status: 'RENTED', mileage: odometer } }, { session });
-    return { code, plateNumber: vehicle.plateNumber, photos: hasPhotos(pickupInspection) };
+    return { code, plateNumber: vehicle.plateNumber, photos: hasPhotos(pickupInspection), fullyPaid: Boolean(fullPayment) };
   }
 
   async function getRental(ctx, rentalId) {
@@ -223,7 +243,7 @@ function createRentals({ platformDb }) {
       : null;
     return {
       ...presentRental(rental, ctx),
-      payments: payments && payments.map((p) => presentPayment({ ...p, rental, renter: rental.renter }))
+      payments: payments && payments.map((p) => presentPayment({ ...p, rental, renter: rental.renter }, ctx))
     };
   }
 
@@ -272,21 +292,25 @@ function createRentals({ platformDb }) {
           rental = { ...rental, paidAmount: data.advance.amount };
         }
         if (data.pickup) {
-          const handedOver = await checkInWithin(ctx, session, rental, data.pickup);
+          const handedOver = await checkInWithin(ctx, session, rental, { ...data.pickup, fullPaymentPath: 'pickup.confirmFullPayment' });
           photos = handedOver.photos;
-          summary += `; handed over as ${handedOver.code}`;
+          summary += `; handed over as ${handedOver.code}${handedOver.fullyPaid ? ', full payment confirmed' : ''}`;
         }
       });
-      if (photos) await refreshStorage(ctx);
+      const fieldFiles = [...customFieldFiles(data.customFields), ...customFieldFiles(data.advance?.customFields)];
+      if (photos || fieldFiles.length) await refreshStorage(ctx);
       await recordAudit(ctx, { action: data.pickup ? 'rental.dispatched' : 'rental.reserved', entityType: 'rental', entityId: String(rentalId), summary });
       return getRental(ctx, String(rentalId));
     },
 
+    /** Hands the vehicle over. With `confirmFullPayment`, also confirms the renter has paid everything (see fullPaymentBy). */
     async checkIn(ctx, rentalId, input) {
-      const data = parse(InspectionSchema(ctx), input);
+      const data = parse(CheckInSchema(ctx), input);
       let result;
       await inTransaction(ctx, async (session) => {
         const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental', { session });
+        // Locks the rental too, so a payment can't be voided while the full payment is being confirmed.
+        await lock(ctx, `rental:${rental._id}`, session);
         result = { ...(await checkInWithin(ctx, session, rental, data)), bookingCode: rental.code };
       });
       if (result.photos) await refreshStorage(ctx);
@@ -294,15 +318,36 @@ function createRentals({ platformDb }) {
         action: 'rental.checked_in',
         entityType: 'rental',
         entityId: rentalId,
-        summary: `Handed over ${result.plateNumber}: ${result.bookingCode} is now ${result.code}`
+        summary: `Handed over ${result.plateNumber}: ${result.bookingCode} is now ${result.code}${result.fullyPaid ? '; full payment confirmed' : ''}`
       });
+      return getRental(ctx, rentalId);
+    },
+
+    /**
+     * Confirms after the hand-over that an active or completed rental is paid
+     * in full, e.g. when the renter paid the rest later.
+     */
+    async confirmFullPayment(ctx, rentalId) {
+      let code;
+      await inTransaction(ctx, async (session) => {
+        const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental', { session });
+        await lock(ctx, `rental:${rental._id}`, session);
+        if (!['ACTIVE', 'COMPLETED'].includes(rental.status)) {
+          throw conflict(`The full payment is confirmed at the hand-over or after it; ${rental.code} is ${rental.status.toLowerCase()}`);
+        }
+        if (rental.fullPayment?.at) throw conflict(`${rental.code} is already confirmed as paid in full`);
+        await ctx.models.Rental.updateOne({ _id: rental._id }, { $set: { fullPayment: fullPaymentBy(ctx, rental) } }, { session });
+        code = rental.code;
+      });
+      await recordAudit(ctx, { action: 'rental.full_payment_confirmed', entityType: 'rental', entityId: rentalId, summary: `Confirmed ${code} as paid in full` });
       return getRental(ctx, rentalId);
     },
 
     async updateRental(ctx, rentalId, input) {
       const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental');
-      const { customFields, ...changes } = parseRecord(RentalUpdateSchema(ctx.config), input, ctx.config, 'rentals', { update: true });
+      const { customFields, ...changes } = parseRecord(RentalUpdateSchema(ctx), input, ctx.config, 'rentals', { update: true });
       await ctx.models.Rental.updateOne({ _id: rental._id }, updateWithCustomFields(changes, customFields));
+      if (await discardReplacedFieldFiles(ctx, rental, customFields)) await refreshStorage(ctx);
       const fields = [
         ...Object.keys(changes).filter((key) => changes[key] !== (rental[key] ?? '')),
         ...changedCustomFields(rental, customFields)

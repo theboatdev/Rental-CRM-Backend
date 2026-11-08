@@ -39,6 +39,19 @@ function storageApiError(error) {
 
 const unixTime = (date = new Date()) => Math.floor(date.getTime() / 1000);
 
+/** Files the backend reads itself (photos for a PDF) are at most this big, and fetched within this long. */
+const READ_LIMITS = { maxBytes: 20 * 1024 ** 2, timeoutMs: 15_000 };
+
+/** GETs `url` into a buffer, refusing a response over `maxBytes` or slower than `timeoutMs`. */
+async function fetchBytes(url, { maxBytes, timeoutMs } = READ_LIMITS) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`${new URL(url).hostname} responded ${res.status}`);
+  if (Number(res.headers.get('content-length')) > maxBytes) throw new Error(`Larger than ${maxBytes} bytes`);
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (bytes.length > maxBytes) throw new Error(`Larger than ${maxBytes} bytes`);
+  return bytes;
+}
+
 function createStorageGateway({ url }) {
   if (!url) {
     const notConfigured = () => {
@@ -49,6 +62,7 @@ function createStorageGateway({ url }) {
       signUpload: notConfigured,
       verifyUpload: notConfigured,
       downloadUrl: notConfigured,
+      readFile: notConfigured,
       publicUrl: notConfigured,
       deleteAsset: notConfigured,
       deletePrefix: notConfigured
@@ -96,6 +110,15 @@ function createStorageGateway({ url }) {
       });
     },
 
+    /** The bytes of a stored file, such as an inspection photo going into a PDF. Fails like fetchBytes. */
+    async readFile({ publicId, resourceType = 'image', format, type = 'authenticated' }) {
+      const url =
+        type === 'upload'
+          ? cloudinary.url(publicId, { secure: true, type, resource_type: resourceType, format, urlAnalytics: false })
+          : cloudinary.utils.private_download_url(publicId, format, { resource_type: resourceType, type, expires_at: unixTime() + LINK_TTL_SECONDS });
+      return fetchBytes(url);
+    },
+
     /** The CDN link of a public (`upload`) image, such as a vehicle photo. It never expires. */
     publicUrl({ publicId, format }) {
       return cloudinary.url(publicId, { secure: true, type: 'upload', resource_type: 'image', format, urlAnalytics: false });
@@ -126,4 +149,4 @@ function createStorageGateway({ url }) {
   };
 }
 
-module.exports = { createStorageGateway, parseCloudinaryUrl, storageApiError, LINK_TTL_SECONDS };
+module.exports = { createStorageGateway, parseCloudinaryUrl, storageApiError, fetchBytes, LINK_TTL_SECONDS };

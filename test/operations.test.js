@@ -390,6 +390,103 @@ describe('payments', () => {
   });
 });
 
+describe('full payment', () => {
+  // addVehicle: 10,000 a day and a 20,000 deposit; book: three days. So 50,000 in all.
+  const FULL = 50000;
+  const owes = async (rental) => (await staff('GET', `/rentals/${rental.id}`)).body;
+
+  // Each test books fresh vehicles; later suites add more, so the limit stays raised.
+  before(() => publish(tenantA, (config) => (config.limits.maxVehicles = 100)));
+
+  it('is confirmed at the hand-over only once the ledger shows nothing owed', async () => {
+    const booking = (await book(await addVehicle(), await addRenter(), { advance: { amount: 10000, method: 'CASH' } })).body;
+    const refused = await staff('POST', `/rentals/${booking.id}/check-in`, { checkedPoints: points, confirmFullPayment: true });
+    assert.equal(refused.status, 422);
+    assert.match(refused.body.error.message, /LKR\s40,000 is still to be paid/);
+    assert.deepEqual(refused.body.error.issues.map((i) => i.path), ['confirmFullPayment']);
+    assert.equal((await owes(booking)).status, 'RESERVED');
+
+    assert.equal((await staff('POST', '/payments', { rentalId: booking.id, type: 'ADVANCE', method: 'CASH', amount: FULL - 10000 })).status, 201);
+    const { status, body } = await staff('POST', `/rentals/${booking.id}/check-in`, { checkedPoints: points, confirmFullPayment: true });
+    assert.equal(status, 200, JSON.stringify(body));
+    assert.equal(body.status, 'ACTIVE');
+    assert.deepEqual(body.fullPayment.by, { id: 'user_staff', name: 'staff' });
+    assert.ok(Date.parse(body.fullPayment.at));
+    assert.ok((await staff('GET', '/rentals')).body.find((r) => r.id === booking.id).fullPayment);
+    const [entry] = await modelsA().AuditLog.find({ action: 'rental.checked_in', entityId: booking.id }).lean();
+    assert.match(entry.summary, /; full payment confirmed$/);
+
+    const plain = (await book(await addVehicle(), await addRenter())).body;
+    assert.equal((await staff('POST', `/rentals/${plain.id}/check-in`, { checkedPoints: points })).body.fullPayment, null);
+  });
+
+  it('is confirmed when booking and handing over at once, if the advance covers everything', async () => {
+    const vehicle = await addVehicle();
+    const renter = await addRenter();
+    const short = await book(vehicle, renter, { advance: { amount: 10000, method: 'CASH' }, pickup: { checkedPoints: points, confirmFullPayment: true } });
+    assert.equal(short.status, 422);
+    assert.deepEqual(short.body.error.issues.map((i) => i.path), ['pickup.confirmFullPayment']);
+    assert.equal((await staff('GET', `/rentals?vehicleId=${vehicle.id}`)).body.length, 0);
+
+    const full = await book(vehicle, renter, { advance: { amount: FULL, method: 'CASH' }, pickup: { checkedPoints: points, confirmFullPayment: true } });
+    assert.equal(full.status, 201, JSON.stringify(full.body));
+    assert.equal(full.body.status, 'ACTIVE');
+    assert.ok(full.body.fullPayment);
+  });
+
+  it('can be confirmed later, and a void that leaves money owed clears it', async () => {
+    const rental = (await book(await addVehicle(), await addRenter(), { pickup: { checkedPoints: points } })).body;
+    assert.equal(rental.fullPayment, null);
+    assert.equal((await accountant('POST', `/rentals/${rental.id}/full-payment`)).status, 409);
+
+    const payment = (await accountant('POST', '/payments', { rentalId: rental.id, type: 'RENTAL', method: 'CASH', amount: FULL })).body;
+    const confirmed = await accountant('POST', `/rentals/${rental.id}/full-payment`);
+    assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+    assert.equal(confirmed.body.fullPayment.by.id, 'user_accountant');
+    assert.match((await accountant('POST', `/rentals/${rental.id}/full-payment`)).body.error.message, /already confirmed/);
+    const [audit] = await modelsA().AuditLog.find({ action: 'rental.full_payment_confirmed', entityId: rental.id }).lean();
+    assert.match(audit.summary, /paid in full$/);
+
+    assert.equal((await accountant('POST', `/payments/${payment.id}/void`, { reason: 'Card declined' })).status, 200);
+    assert.equal((await owes(rental)).fullPayment, null);
+    const [voided] = await modelsA().AuditLog.find({ action: 'payment.voided', entityId: payment.id }).lean();
+    assert.match(voided.summary, /full payment confirmation was cleared/);
+  });
+
+  it('stays through the deposit refund at the return', async () => {
+    const rental = (await book(await addVehicle(), await addRenter(), { advance: { amount: FULL, method: 'CASH' }, pickup: { checkedPoints: points, confirmFullPayment: true } })).body;
+    assert.equal((await staff('POST', `/rentals/${rental.id}/return`, { odometer: 50500, checkedPoints: points })).status, 200);
+    assert.equal((await staff('POST', '/payments', { rentalId: rental.id, type: 'REFUND', method: 'CASH', amount: 20000 })).status, 201);
+    const after = await owes(rental);
+    assert.equal(after.depositRefunded, true);
+    // The refunded deposit isn't owed any more, so nothing is outstanding.
+    assert.equal(after.balance, 0);
+    assert.ok(after.fullPayment);
+  });
+
+  it("can't be confirmed before the hand-over, and is staff's word without the payments module", async () => {
+    const booking = (await book(await addVehicle(), await addRenter())).body;
+    assert.match((await staff('POST', `/rentals/${booking.id}/full-payment`)).body.error.message, /is reserved/);
+
+    await publish(tenantA, (config) => {
+      config.modules.payments.enabled = false;
+      config.navigation = config.navigation.filter((item) => item.module !== 'payments');
+    });
+    try {
+      const handedOver = await staff('POST', `/rentals/${booking.id}/check-in`, { checkedPoints: points, confirmFullPayment: true });
+      assert.equal(handedOver.status, 200, JSON.stringify(handedOver.body));
+      assert.ok(handedOver.body.fullPayment);
+      // Without payments:record (dropped with the module) or rentals:checkin, it can't be confirmed later.
+      assert.equal((await accountant('POST', `/rentals/${booking.id}/full-payment`)).status, 403);
+    } finally {
+      await publish(tenantA, (config) => {
+        config.modules.payments.enabled = true;
+        config.navigation.push({ module: 'payments', label: 'Payments' });
+      });
+    }
+  });
+});
+
 describe('costs and fuel', () => {
   it('logs costs against list categories and moves the odometer forward', async () => {
     const vehicle = await addVehicle({ mileage: 40000 });

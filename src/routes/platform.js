@@ -1,7 +1,10 @@
 const express = require('express');
-const { handle } = require('./handle');
+const { handle, handleFile } = require('./handle');
 const { getPlatformMeta } = require('../platform/meta');
 const { validateConfig } = require('../platform/service');
+const { parseTenantConfig } = require('../platform/config/schema');
+const { previewReturnReceipt } = require('../platform/documents/sample');
+const { fetchLogo } = require('../platform/documents/images');
 const { invalid } = require('../platform/errors');
 const { requireDatabase } = require('../middleware/database');
 
@@ -25,7 +28,7 @@ const invalidJsonResult = (issues) => ({ valid: false, issues, changes: [], remo
  * `req.actor`. The rules (/meta, /config/validate) work without a database;
  * everything after them needs `platformDb` connected.
  */
-function createPlatformRouter({ service, tenantUsers, integrations, platformAuth, platformDb }) {
+function createPlatformRouter({ service, tenantUsers, integrations, platformAuth, platformDb, loadLogo = fetchLogo }) {
   const router = express.Router();
   router.use(platformAuth);
 
@@ -36,6 +39,18 @@ function createPlatformRouter({ service, tenantUsers, integrations, platformAuth
     handle((req) => {
       const { config, syntaxIssues } = readConfigBody(req.body);
       return syntaxIssues ? invalidJsonResult(syntaxIssues) : validateConfig(config, req.body?.baseline);
+    })
+  );
+
+  // The return receipt of a sample rental under a draft config, as a PDF, so the config editor can show it.
+  router.post(
+    '/documents/return-receipt/preview',
+    handleFile(async (req) => {
+      const { config, syntaxIssues } = readConfigBody(req.body);
+      if (syntaxIssues) throw invalid('The config is not valid JSON', syntaxIssues);
+      const parsed = parseTenantConfig(config);
+      if (!parsed.success) throw invalid('Fix the config before previewing the receipt', parsed.issues);
+      return previewReturnReceipt(parsed.data, { issuedBy: req.actor.name, logo: await loadLogo(parsed.data.branding.logoUrl) });
     })
   );
 

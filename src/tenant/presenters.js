@@ -1,5 +1,5 @@
 const { iso, dateString, todayIn } = require('./common');
-const { fileView } = require('./files');
+const { fileView, isStoredFile } = require('./files');
 
 /**
  * Response shapes for the tenant operations. Ids are strings, timestamps ISO
@@ -9,12 +9,16 @@ const { fileView } = require('./files');
  * `contract.ts` mirrors these.
  */
 
+/** A record's custom field values, with the files of `file` fields as `fileView`s for callers with `permission`. */
+const presentCustomFields = (ctx, values, permission) =>
+  Object.fromEntries(Object.entries(values ?? {}).map(([key, value]) => [key, isStoredFile(value) ? fileView(ctx, value, permission) : value]));
+
 const idOf = (value) => (value?._id ? String(value._id) : value ? String(value) : null);
 
 const vehicleRef = (v) => (v?._id ? { id: String(v._id), plateNumber: v.plateNumber, make: v.make, model: v.model } : null);
 const renterRef = (r) => (r?._id ? { id: String(r._id), profileId: r.profileId, fullName: r.fullName, phone: r.phone } : null);
 
-const presentVehicle = (v) => ({
+const presentVehicle = (v, ctx) => ({
   id: String(v._id),
   plateNumber: v.plateNumber,
   make: v.make,
@@ -29,7 +33,7 @@ const presentVehicle = (v) => ({
   status: v.status,
   thumbnail: v.thumbnail ?? null,
   notes: v.notes ?? '',
-  customFields: v.customFields ?? {},
+  customFields: presentCustomFields(ctx, v.customFields, 'vehicles:read'),
   createdAt: iso(v.createdAt),
   updatedAt: iso(v.updatedAt)
 });
@@ -75,7 +79,7 @@ const presentRenter = (r, ctx, rentalsCount = 0) => ({
   compliance: complianceOf(r, ctx.config),
   source: r.source,
   notes: r.notes ?? '',
-  customFields: r.customFields ?? {},
+  customFields: presentCustomFields(ctx, r.customFields, 'renters:read'),
   rentalsCount,
   createdAt: iso(r.createdAt)
 });
@@ -92,6 +96,13 @@ const presentInspection = (i, ctx) =>
         notes: i.notes ?? ''
       }
     : null;
+
+/**
+ * What the renter still owes on a rental: the rental and its deposit, less
+ * what's been paid. A deposit that was refunded no longer counts, so a
+ * settled rental owes nothing after its deposit goes back.
+ */
+const owedOn = (rental) => rental.totalAmount + (rental.depositRefunded ? 0 : rental.depositAmount) - (rental.paidAmount ?? 0);
 
 /** `today` (the tenant's date) decides whether an active rental is overdue. */
 function presentRental(r, ctx) {
@@ -114,9 +125,11 @@ function presentRental(r, ctx) {
     totalAmount: r.totalAmount,
     depositAmount: r.depositAmount,
     paidAmount: r.paidAmount ?? 0,
-    // What the renter still owes, counting the deposit.
-    balance: r.totalAmount + r.depositAmount - (r.paidAmount ?? 0),
+    // What the renter still owes, counting the deposit until it's refunded.
+    balance: owedOn(r),
     depositRefunded: r.depositRefunded ?? false,
+    // Staff's confirmation that the renter paid everything (usually at pickup), or null.
+    fullPayment: r.fullPayment?.at ? { at: iso(r.fullPayment.at), by: r.fullPayment.by ?? null } : null,
     startMileage: r.startMileage ?? null,
     endMileage: r.endMileage ?? null,
     distance: r.endMileage != null && r.startMileage != null ? r.endMileage - r.startMileage : null,
@@ -125,12 +138,12 @@ function presentRental(r, ctx) {
     cancelledAt: iso(r.cancelledAt),
     createdBy: r.createdBy ?? null,
     notes: r.notes ?? '',
-    customFields: r.customFields ?? {},
+    customFields: presentCustomFields(ctx, r.customFields, 'rentals:read'),
     createdAt: iso(r.createdAt)
   };
 }
 
-const presentPayment = (p) => ({
+const presentPayment = (p, ctx) => ({
   id: String(p._id),
   receiptNumber: p.receiptNumber,
   type: p.type,
@@ -142,7 +155,7 @@ const presentPayment = (p) => ({
   receivedBy: p.receivedBy ?? null,
   transactionReference: p.transactionReference ?? null,
   notes: p.notes ?? '',
-  customFields: p.customFields ?? {},
+  customFields: presentCustomFields(ctx, p.customFields, 'payments:read'),
   voided: Boolean(p.voidedAt),
   voidedAt: iso(p.voidedAt),
   voidedBy: p.voidedBy ?? null,
@@ -162,7 +175,7 @@ const presentCost = (c, ctx) => ({
   odometer: c.odometer ?? null,
   createdBy: c.createdBy ?? null,
   notes: c.notes ?? '',
-  customFields: c.customFields ?? {},
+  customFields: presentCustomFields(ctx, c.customFields, 'costs:read'),
   createdAt: iso(c.createdAt)
 });
 
@@ -190,5 +203,6 @@ module.exports = {
   presentPayment,
   presentCost,
   presentFuelLog,
-  complianceOf
+  complianceOf,
+  owedOn
 };

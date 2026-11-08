@@ -432,6 +432,172 @@ describe('vehicle photos', () => {
   });
 });
 
+describe('custom field files', () => {
+  /** What the app does for a `file` custom field: sign an upload for the field, post the file, keep the response. */
+  const uploadFor = async (caller, section, field, options) => {
+    const signed = await caller('POST', '/uploads', { kind: 'customField', section, field });
+    assert.equal(signed.status, 201, JSON.stringify(signed.body));
+    return storage.upload(signed.body.fields, options);
+  };
+  const fieldsOf = (config, section) => config.fields[section].custom;
+
+  before(() =>
+    publish(tenantA, (config) => {
+      config.fields.vehicles.custom = [
+        { key: 'insuranceCard', label: 'Insurance card', type: 'file' },
+        { key: 'registrationBook', label: 'Registration book', type: 'file', accept: 'documents' },
+        { key: 'gpsSerial', label: 'GPS serial', type: 'text' }
+      ];
+      config.fields.payments.custom = [{ key: 'slipPhoto', label: 'Slip photo', type: 'file', required: true }];
+      config.fields.costs.custom = [{ key: 'partsPhoto', label: 'Parts photo', type: 'file' }];
+    })
+  );
+  after(() => publish(tenantA, (config) => delete config.fields));
+
+  it("signs a private upload under the field's own folder, in the formats it accepts", async () => {
+    const image = await staff('POST', '/uploads', { kind: 'customField', section: 'vehicles', field: 'insuranceCard' });
+    assert.equal(image.status, 201, JSON.stringify(image.body));
+    assert.equal(image.body.kind, 'customField');
+    assert.match(image.body.publicId, new RegExp(`^tenants/${tenantA.id}/fields/vehicles/insuranceCard/[0-9a-f-]{36}$`));
+    assert.equal(image.body.fields.type, 'authenticated');
+    assert.equal(image.body.fields.allowed_formats, 'jpg,jpeg,png,webp,heic,heif');
+    assert.equal(image.body.fields.format, 'jpg');
+    assert.equal(image.body.fields.transformation, 'c_limit,h_2000,w_2000');
+
+    const documents = await staff('POST', '/uploads', { kind: 'customField', section: 'vehicles', field: 'registrationBook' });
+    assert.equal(documents.body.fields.allowed_formats, 'jpg,jpeg,png,webp,pdf');
+    assert.equal(documents.body.fields.format, undefined);
+
+    for (const request of [{ section: 'vehicles', field: 'gpsSerial' }, { section: 'vehicles', field: 'nothing' }, { section: 'fuelLogs', field: 'insuranceCard' }]) {
+      assert.equal((await staff('POST', '/uploads', { kind: 'customField', ...request })).status, 422, JSON.stringify(request));
+    }
+  });
+
+  it("needs a permission that writes the field's records", async () => {
+    const refused = await accountant('POST', '/uploads', { kind: 'customField', section: 'vehicles', field: 'insuranceCard' });
+    assert.equal(refused.status, 403);
+    assert.match(refused.body.error.message, /vehicles:create or vehicles:update/);
+    assert.equal((await accountant('POST', '/uploads', { kind: 'customField', section: 'costs', field: 'partsPhoto' })).status, 201);
+  });
+
+  it('keeps the file in the field, served through an expiring link', async () => {
+    const insuranceCard = await uploadFor(owner, 'vehicles', 'insuranceCard', { bytes: 5 * MB });
+    const before = (await tenantDoc(tenantA)).usage.storageGb;
+    const created = await owner('POST', '/vehicles', {
+      plateNumber: 'WP CFF-1',
+      make: 'Toyota',
+      model: 'Aqua',
+      year: 2020,
+      dailyRate: 9000,
+      customFields: { insuranceCard, gpsSerial: 'GPS-1' }
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const { insuranceCard: shown, gpsSerial } = created.body.customFields;
+    assert.equal(gpsSerial, 'GPS-1');
+    assert.equal(shown.format, 'jpg');
+    assert.equal(shown.bytes, 5 * MB);
+    assert.match(shown.url, /expires_at=/);
+    assert.ok(shown.url.includes(encodeURIComponent(insuranceCard.publicId)));
+    assert.equal(shown.publicId, undefined);
+    assert.ok((await tenantDoc(tenantA)).usage.storageGb - before > 0.004);
+
+    const stored = (await db.getTenantDb(tenantA.dbName).models.Vehicle.findById(created.body.id).lean()).customFields.insuranceCard;
+    assert.equal(stored.publicId, insuranceCard.publicId);
+    assert.ok((await staff('GET', `/vehicles/${created.body.id}`)).body.customFields.insuranceCard.url);
+  });
+
+  it('refuses a file of another field or kind, and a forged one', async () => {
+    const vehicle = await addVehicle();
+    const refused = async (insuranceCard) => {
+      const res = await staff('PATCH', `/vehicles/${vehicle.id}`, { customFields: { insuranceCard } });
+      assert.equal(res.status, 422);
+      return res.body.error.issues.map((i) => i.path);
+    };
+    assert.deepEqual(await refused(await uploadFor(staff, 'vehicles', 'registrationBook')), ['customFields.insuranceCard']);
+    assert.deepEqual(await refused(await uploadAs(staff, 'inspection')), ['customFields.insuranceCard']);
+    assert.deepEqual(await refused({ ...(await uploadFor(staff, 'vehicles', 'insuranceCard')), signature: '0'.repeat(40) }), ['customFields.insuranceCard']);
+    assert.deepEqual(await refused('https://example.com/card.jpg'), ['customFields.insuranceCard']);
+  });
+
+  it("checks the file against the field's accept when it's saved", async () => {
+    const vehicle = await addVehicle();
+    const pdf = await uploadFor(staff, 'vehicles', 'registrationBook', { format: 'pdf' });
+    await publish(tenantA, (config) => (fieldsOf(config, 'vehicles').find((f) => f.key === 'registrationBook').accept = 'images'));
+    try {
+      const refused = await staff('PATCH', `/vehicles/${vehicle.id}`, { customFields: { registrationBook: pdf } });
+      assert.equal(refused.status, 422);
+      assert.deepEqual(refused.body.error.issues, [{ path: 'customFields.registrationBook', message: "This kind of file isn't accepted here" }]);
+    } finally {
+      await publish(tenantA, (config) => (fieldsOf(config, 'vehicles').find((f) => f.key === 'registrationBook').accept = 'documents'));
+    }
+    const saved = await staff('PATCH', `/vehicles/${vehicle.id}`, { customFields: { registrationBook: pdf } });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.customFields.registrationBook.format, 'pdf');
+  });
+
+  it('replaces and clears a file, deleting the old one, and deleting the vehicle deletes it', async () => {
+    const vehicle = await addVehicle();
+    const first = await uploadFor(staff, 'vehicles', 'insuranceCard');
+    assert.equal((await staff('PATCH', `/vehicles/${vehicle.id}`, { customFields: { insuranceCard: first } })).status, 200);
+
+    const second = await uploadFor(staff, 'vehicles', 'insuranceCard');
+    const replaced = await staff('PATCH', `/vehicles/${vehicle.id}`, { customFields: { insuranceCard: second } });
+    assert.ok(replaced.body.customFields.insuranceCard.url.includes(encodeURIComponent(second.publicId)));
+    assert.ok(storage.deleted.includes(first.publicId));
+
+    const cleared = await staff('PATCH', `/vehicles/${vehicle.id}`, { customFields: { insuranceCard: null } });
+    assert.equal(cleared.body.customFields.insuranceCard, undefined);
+    assert.ok(storage.deleted.includes(second.publicId));
+
+    const third = await uploadFor(staff, 'vehicles', 'insuranceCard');
+    await staff('PATCH', `/vehicles/${vehicle.id}`, { customFields: { insuranceCard: third } });
+    // Sending the same upload again keeps it.
+    assert.equal((await staff('PATCH', `/vehicles/${vehicle.id}`, { mileage: 1500, customFields: { insuranceCard: third } })).status, 200);
+    assert.ok(!storage.deleted.includes(third.publicId));
+    assert.equal((await owner('DELETE', `/vehicles/${vehicle.id}`)).status, 200);
+    assert.ok(storage.deleted.includes(third.publicId));
+  });
+
+  it("takes payment files on a booking's advance and on payments, and cost files", async () => {
+    const vehicle = await addVehicle();
+    const renter = await staff('POST', '/renters', {
+      fullName: 'Field Files',
+      phone: '+94773334445',
+      documents: [{ type: 'NIC', number: '1', verified: true }, { type: 'DRIVING_LICENSE_LK', number: '2', verified: true }]
+    });
+    const booking = { vehicleId: vehicle.id, renterId: renter.body.id, startDate: TODAY, endDate: addDays(TODAY, 2) };
+
+    const missing = await staff('POST', '/rentals', { ...booking, advance: { amount: 1000, method: 'CASH' } });
+    assert.equal(missing.status, 422);
+    assert.deepEqual(missing.body.error.issues, [{ path: 'advance.customFields.slipPhoto', message: 'Required' }]);
+
+    const slip = await uploadFor(staff, 'payments', 'slipPhoto');
+    const booked = await staff('POST', '/rentals', { ...booking, advance: { amount: 1000, method: 'CASH', customFields: { slipPhoto: slip } } });
+    assert.equal(booked.status, 201, JSON.stringify(booked.body));
+    assert.ok(booked.body.payments[0].customFields.slipPhoto.url);
+
+    const before = (await tenantDoc(tenantA)).usage.storageGb;
+    const payment = await staff('POST', '/payments', {
+      rentalId: booked.body.id,
+      type: 'RENTAL',
+      method: 'CASH',
+      amount: 500,
+      customFields: { slipPhoto: await uploadFor(staff, 'payments', 'slipPhoto', { bytes: 8 * MB }) }
+    });
+    assert.equal(payment.status, 201, JSON.stringify(payment.body));
+    assert.ok(payment.body.customFields.slipPhoto.url);
+    assert.ok((await tenantDoc(tenantA)).usage.storageGb - before > 0.007);
+    assert.ok((await accountant('GET', '/payments')).body.find((p) => p.id === payment.body.id).customFields.slipPhoto.url);
+
+    const partsPhoto = await uploadFor(accountant, 'costs', 'partsPhoto');
+    const cost = await accountant('POST', '/costs', { vehicleId: vehicle.id, category: 'ROUTINE_MAINTENANCE', title: 'Brake pads', amount: 9000, customFields: { partsPhoto } });
+    assert.equal(cost.status, 201, JSON.stringify(cost.body));
+    assert.ok(cost.body.customFields.partsPhoto.url);
+    assert.equal((await owner('DELETE', `/costs/${cost.body.id}`)).status, 200);
+    assert.ok(storage.deleted.includes(partsPhoto.publicId));
+  });
+});
+
 describe('platform files', () => {
   it('signs a public logo upload for a tenant', async () => {
     const signed = await service.signLogoUpload(tenantA.id);

@@ -42,6 +42,7 @@ How each app uses it:
 | `lists` | `documentTypes` (with `requiredFor: local/tourist`), `paymentMethods`, `costCategories`: each item is `{ key, label, active }` | See "List keys" |
 | `rules` | `defaultDepositAmount`, `minRentalDays`, `touristPermitDocumentKeys`, `codePrefixes` (`rental`, `booking`, `receipt`, `advance`, `renter`) | Prefixes produce codes like `RNT-2026-0042` |
 | `fields` | `vehicles`, `renters`, `rentals`, `payments`, `costs`: each `{ builtIn, custom }` | Every field of each record type. Optional; filled in with defaults. See "Fields" |
+| `documents` | `returnReceipt` | The PDFs the tenant app issues. Optional; filled in with defaults. See "Documents" |
 | `limits` | `maxVehicles`, `maxUsers`, `storageGb` | Enforced by the API; usage is shown next to each limit |
 
 Module settings:
@@ -131,7 +132,7 @@ Every custom field has these settings:
 |---|---|---|
 | `key` | | camelCase letters and digits, e.g. `insuranceExpiry`. Records store values in their `customFields` object under it. It can't be a built-in field's key, and the profit and margin names (`profit`, `revenue`, …) are reserved |
 | `label` | | Shown in forms, views and list headers |
-| `type` | | `text`, `longText`, `number`, `date`, `boolean` (yes/no) or `select` (a choice list) |
+| `type` | | `text`, `longText`, `number`, `date`, `boolean` (yes/no), `select` (a choice list) or `file` (an uploaded file) |
 | `required` | `false` | Needed when a record is created, and can't be cleared afterwards. A required yes/no field must be ticked |
 | `active` | `true` | Off: the field is hidden and the API ignores values for it; records keep what they have |
 | `showInList` | `false` | Also a column in the section's list |
@@ -146,17 +147,48 @@ Some types have settings of their own, and settings of another type are rejected
 | `date` | | `YYYY-MM-DD` strings |
 | `boolean` | | `true` or `false` |
 | `select` | `options`: list items (`{ key, label, active }`, at least one) | The option key |
+| `file` | `accept`: `images` (default; JPG, PNG, WebP or HEIC, stored as a JPEG at most 2000 px on a side) or `documents` (JPG, PNG, WebP or PDF, stored as uploaded) | One stored file, `{ publicId, resourceType, format, bytes, uploadedAt }`. Responses show it as a file with a link that expires after 10 minutes |
 
 The rules:
 
 - **At most 20 custom fields per record type**, with unique keys.
 - **The backend validates values** against the active config (`src/tenant/fields.js`). It rejects keys that aren't fields of the record type, values of the wrong type, and inactive options.
 - **Edits merge.** An edit changes only the fields it sends; `null` or `""` clears a field. So a field that became required later doesn't block edits to older records.
+- **File fields.** Any record type can have them, e.g. an insurance card photo on vehicles or a payment slip on payments. The app signs an upload for the field (`POST /api/v1/uploads { kind: "customField", section, field }`), sends the file to Cloudinary, and puts Cloudinary's response in `customFields` under the field's key. The upload needs a permission that writes the record type, and the link needs its read permission (see [platform-architecture.md](platform-architecture.md#files)). Replacing or clearing a file deletes the old one, and so does deleting the vehicle or cost. Files count towards `limits.storageGb`.
 - **Where they can be edited.** Vehicles and renters through their usual edits. Rentals through `PATCH /api/v1/rentals/:id`, which also edits the notes (permission `rentals:create`). Payments and costs only take values when they're recorded, like the rest of those entries. A booking's advance takes the payment fields under `advance.customFields`.
 
 Records keep their values by key, so the same caution as list keys applies. Deactivate a field or an option instead of removing it, and add a new field rather than changing a field's type. The editor locks published keys, and the publish dialog warns about removed fields, type changes and removed options (`customFieldChanges`).
 
 Configs published before fields were configurable have no `fields`. The backend adds the defaults when it reads them (`withConfigDefaults`), so readers can rely on the section being there.
+
+## Documents
+
+`documents.returnReceipt` sets up the **return receipt**: the PDF bill a completed rental downloads as, from the rental's details in the tenant app (`GET /api/v1/rentals/:id/return-receipt`). The rental service issues it to the renter. It confirms that the vehicle came back, and shows what the rental's details show: the renter and vehicle, the dates and odometer, the charges and what was paid, the payments, custom fields and notes, and both inspections with their photos.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Off: the download button is hidden and the API responds 404 |
+| `title` | `Rental invoice & return receipt` | The document's title |
+| `issuerDetails` | `[]` | Up to 6 lines under the business name: address, registration or tax number |
+| `returnStatement` | `This confirms that {renterName} returned the {vehicle} ({plateNumber}) on {returnDate}, and that rental {rentalCode} is complete.` | The confirmation near the top |
+| `showInspections` | `true` | Both inspections: when, by whom, the odometer, the checked points and notes |
+| `showInspectionPhotos` | `true` | Each inspection's photos. They make the file larger (one JPEG of up to 2000 px per point) |
+| `showPayments` | `true` | The rental's payments, voided ones left out. Only for members with `payments:read`; the totals show either way |
+| `showCustomFields` | `true` | The rental's custom fields and notes. File fields show as "Attached" |
+| `showSignatures` | `true` | Signature lines for the renter and the business |
+| `footer` | `Thank you for renting with {businessName}.` | Terms or a thank-you at the end; `""` for none |
+| `paperSize` | `A4` (the base template: `LETTER`) | `A4` or `LETTER` |
+
+`returnStatement` and `footer` can use these placeholders, and no other `{names}`: `{businessName}`, `{renterName}`, `{vehicle}` (make and model), `{plateNumber}`, `{rentalCode}` and `{returnDate}`. `GET /api/platform/meta` lists them as `documentPlaceholders`.
+
+The receipt also uses `branding` (name, tagline, logo, colour, support phone and email), `locale` (currency, dates, time zone, distance unit), the field labels in `fields`, and `lists.paymentMethods`. Notes on what it shows:
+
+- **Only once returned.** The receipt is for `COMPLETED` rentals; before the return the API responds 409.
+- **Settlement.** Total is the rental plus the deposit, less the deposit once it's refunded. The balance is what's still owed, "Paid in full", or a credit to the renter. A rental confirmed as paid in full says when and by whom.
+- **Text.** The PDF uses the standard Helvetica font. Characters outside Western European scripts (Sinhala, Tamil, Cyrillic, CJK…) print as "?", and accents it lacks are dropped.
+- **Logo.** A Cloudinary logo is fetched as a PNG. Other logos must be PNG or JPEG, or the receipt goes without one.
+
+The config editor's **Documents** tab edits these settings and previews the receipt of a sample rental (`POST /api/platform/documents/return-receipt/preview`).
 
 ## What does not belong in config
 

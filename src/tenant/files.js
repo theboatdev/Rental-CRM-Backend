@@ -1,14 +1,17 @@
 const crypto = require('node:crypto');
 const { z } = require('zod');
-const { conflict, forbidden, notFound } = require('../platform/errors');
+const { conflict, forbidden, invalid, notFound } = require('../platform/errors');
+const { DEFAULT_FIELDS } = require('../platform/config/schema');
+const { FIELD_SECTIONS } = require('../platform/config/fields');
 const { iso, parse, can, moduleOn } = require('./common');
 
 /**
  * Files of the tenant API: renter document scans, inspection photos, service
- * bills and vehicle photos, stored in Cloudinary (src/platform/storage.js)
- * under `tenants/<tenantId>/<folder>/<uuid>`.
+ * bills, vehicle photos and the files of `file` custom fields, stored in
+ * Cloudinary (src/platform/storage.js) under `tenants/<tenantId>/<folder>/<uuid>`.
  *
- * 1. The app asks for a signed upload of a kind (POST /uploads).
+ * 1. The app asks for a signed upload of a kind (POST /uploads), or for a
+ *    custom field (`{ kind: 'customField', section, field }`).
  * 2. The browser posts the file straight to Cloudinary with those fields.
  * 3. The app sends Cloudinary's response with the record (`fileInput`),
  *    which checks its signature and folder before the record keeps it.
@@ -52,8 +55,33 @@ const FILE_KINDS = {
 
 const deliveryType = (spec) => (spec.public ? 'upload' : 'authenticated');
 
+/**
+ * `file` custom fields (config `fields.<section>.custom`), per section: the
+ * permissions that write its records, any of which lets a member upload a
+ * field's file, and the one that reads them, which the file's link needs.
+ * Their files are private, under `fields/<section>/<field key>/`, so a file
+ * uploaded for one field can't be kept by another.
+ */
+const FIELD_FILE_SECTIONS = {
+  vehicles: { permissions: ['vehicles:create', 'vehicles:update'], readPermission: 'vehicles:read' },
+  renters: { permissions: ['renters:create', 'renters:update'], readPermission: 'renters:read' },
+  rentals: { permissions: ['rentals:create'], readPermission: 'rentals:read' },
+  payments: { permissions: ['payments:record'], readPermission: 'payments:read' },
+  costs: { permissions: ['costs:create'], readPermission: 'costs:read' }
+};
+
+/** How a `file` field stores uploads, by its `accept`: images as JPEGs at most 2000 px on a side, like inspection photos. */
+const FIELD_FILE_ACCEPTS = {
+  images: { allowedFormats: PHOTO_FORMATS, format: 'jpg', transformation: 'c_limit,h_2000,w_2000' },
+  documents: { allowedFormats: DOCUMENT_FORMATS }
+};
+
+const fieldFolder = (section, key) => `fields/${section}/${key}`;
+
 const FILE_KIND_KEYS = Object.keys(FILE_KINDS);
-const UPLOAD_PERMISSIONS = [...new Set(Object.values(FILE_KINDS).flatMap((kind) => kind.permissions))];
+const UPLOAD_PERMISSIONS = [
+  ...new Set([...Object.values(FILE_KINDS), ...Object.values(FIELD_FILE_SECTIONS)].flatMap((spec) => spec.permissions))
+];
 
 /** The tenant's logo is public: the guest booking page shows it. Super admins upload it from the config editor. */
 const LOGO = { folder: 'branding', allowedFormats: ['jpg', 'jpeg', 'png', 'webp'], transformation: 'c_limit,h_512,w_512' };
@@ -63,15 +91,29 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const tenantPrefix = (tenantId) => `tenants/${tenantId}/`;
 const newPublicId = (tenantId, folder) => `${tenantPrefix(tenantId)}${folder}/${crypto.randomUUID()}`;
 
-/** The fields of a signed upload of `kind` for a tenant, with the public ID the file will get. */
-function signFileUpload(storage, tenantId, kind) {
-  const spec = FILE_KINDS[kind];
+/** The fields of a signed upload into `spec.folder`, with the public ID the file will get. */
+function signSpec(storage, tenantId, spec) {
   const publicId = newPublicId(tenantId, spec.folder);
   return {
-    kind,
     publicId,
     ...storage.signUpload({ publicId, type: deliveryType(spec), allowedFormats: spec.allowedFormats, format: spec.format, transformation: spec.transformation })
   };
+}
+
+/** The fields of a signed upload of `kind` for a tenant, with the public ID the file will get. */
+function signFileUpload(storage, tenantId, kind) {
+  return { kind, ...signSpec(storage, tenantId, FILE_KINDS[kind]) };
+}
+
+/** The active `file` custom field `key` of a section, if there is one. */
+function fileFieldOf(config, section, key) {
+  const { custom } = config.fields?.[section] ?? DEFAULT_FIELDS[section];
+  return custom.find((field) => field.key === key && field.type === 'file' && field.active) ?? null;
+}
+
+/** What an upload of a `file` custom field is signed with: the section's module and permissions, the field's folder and formats. */
+function fieldUploadSpec(section, field) {
+  return { module: section, ...FIELD_FILE_SECTIONS[section], ...FIELD_FILE_ACCEPTS[field.accept], folder: fieldFolder(section, field.key) };
 }
 
 function signLogoUpload(storage, tenantId) {
@@ -94,19 +136,39 @@ async function assertStorageLeft({ Tenant, tenantId, limitGb }) {
  * Parses to what records store.
  */
 function fileInput(ctx, kind) {
-  const prefix = `${tenantPrefix(ctx.tenantId)}${FILE_KINDS[kind].folder}/`;
+  return uploadedFileInput(ctx, FILE_KINDS[kind].folder);
+}
+
+/**
+ * The value of a `file` custom field, like `fileInput`: a file uploaded for
+ * this field of this section, in a format the field's `accept` still takes.
+ */
+function fieldFileInput(ctx, section, field) {
+  const { allowedFormats, format } = FIELD_FILE_ACCEPTS[field.accept];
+  return uploadedFileInput(ctx, fieldFolder(section, field.key), { formats: format ? [...allowedFormats, format] : allowedFormats });
+}
+
+/** An upload response for a file in `folder` (see fileInput). With `formats`, the file must be one of them. */
+function uploadedFileInput(ctx, folder, { formats } = {}) {
+  const prefix = `${tenantPrefix(ctx.tenantId)}${folder}/`;
   return z
     .strictObject({
       publicId: z.string().refine((id) => id.startsWith(prefix) && UUID.test(id.slice(prefix.length)), { error: 'Not a file uploaded for this' }),
       version: z.number().int().positive(),
       signature: z.string().max(128),
-      format: z.string().regex(/^[a-z0-9]{2,5}$/),
+      format: z
+        .string()
+        .regex(/^[a-z0-9]{2,5}$/)
+        .refine((value) => !formats || formats.includes(value), { error: "This kind of file isn't accepted here" }),
       bytes: z.number().int().min(0),
       resourceType: z.enum(['image', 'raw']).default('image')
     })
     .refine((file) => ctx.storage.verifyUpload(file), { error: "This upload couldn't be verified. Upload the file again." })
     .transform(({ publicId, resourceType, format, bytes }) => ({ publicId, resourceType, format, bytes, uploadedAt: new Date() }));
 }
+
+/** Whether a stored value is a file (`{ publicId, … }`), such as a `file` custom field's value. */
+const isStoredFile = (value) => typeof value === 'object' && value !== null && typeof value.publicId === 'string';
 
 /**
  * A stored file as responses show it. `url` is a link that expires after a
@@ -124,7 +186,15 @@ function fileView(ctx, file, permission) {
  * the file is left over, nothing is lost.
  */
 async function discardFiles(ctx, files, kind) {
-  const type = deliveryType(FILE_KINDS[kind]);
+  await deleteStored(ctx, files, deliveryType(FILE_KINDS[kind]));
+}
+
+/** `discardFiles` for the files of `file` custom fields, which are all private. */
+async function discardFieldFiles(ctx, files) {
+  await deleteStored(ctx, files, 'authenticated');
+}
+
+async function deleteStored(ctx, files, type) {
   for (const file of files) {
     if (!file?.publicId) continue;
     try {
@@ -135,20 +205,30 @@ async function discardFiles(ctx, files, kind) {
   }
 }
 
-const UploadRequestSchema = z.strictObject({ kind: z.enum(FILE_KIND_KEYS) });
+const UploadRequestSchema = z.union([
+  z.strictObject({ kind: z.enum(FILE_KIND_KEYS) }),
+  // A `file` custom field: `field` is its key.
+  z.strictObject({ kind: z.literal('customField'), section: z.enum(FIELD_SECTIONS), field: z.string().max(40) })
+]);
 
-/** POST /uploads: signs one browser upload, for a member who may write records of that kind. */
+/** POST /uploads: signs one browser upload, for a member who may write records of that kind (or of the field's section). */
 function createUploads({ platformDb }) {
   return {
     async signUpload(ctx, input) {
-      const { kind } = parse(UploadRequestSchema, input);
-      const spec = FILE_KINDS[kind];
+      const request = parse(UploadRequestSchema, input);
+      let spec = FILE_KINDS[request.kind];
+      if (request.kind === 'customField') {
+        const field = fileFieldOf(ctx.config, request.section, request.field);
+        if (!field) throw invalid('Not a file field of this record', [{ path: 'field', message: 'Not a file field' }]);
+        spec = fieldUploadSpec(request.section, field);
+      }
       if (!moduleOn(ctx, spec.module)) throw notFound('Not found');
       if (!spec.permissions.some((permission) => can(ctx, permission))) {
         throw forbidden(`You don't have the ${spec.permissions.join(' or ')} permission`);
       }
       await assertStorageLeft({ Tenant: platformDb.models.Tenant, tenantId: ctx.tenantId, limitGb: ctx.config.limits.storageGb });
-      return signFileUpload(ctx.storage, ctx.tenantId, kind);
+      if (request.kind === 'customField') return { kind: 'customField', section: request.section, field: request.field, ...signSpec(ctx.storage, ctx.tenantId, spec) };
+      return signFileUpload(ctx.storage, ctx.tenantId, request.kind);
     }
   };
 }
@@ -156,13 +236,17 @@ function createUploads({ platformDb }) {
 module.exports = {
   FILE_KINDS,
   FILE_KIND_KEYS,
+  FIELD_FILE_SECTIONS,
   UPLOAD_PERMISSIONS,
   tenantPrefix,
   signFileUpload,
   signLogoUpload,
   assertStorageLeft,
   fileInput,
+  fieldFileInput,
+  isStoredFile,
   fileView,
   discardFiles,
+  discardFieldFiles,
   createUploads
 };

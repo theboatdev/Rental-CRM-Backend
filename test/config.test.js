@@ -205,6 +205,20 @@ describe('fields', () => {
     ]);
   });
 
+  it('takes file fields in every section, for images by default or documents', () => {
+    const config = sriLanka();
+    for (const section of ['vehicles', 'renters', 'rentals', 'payments', 'costs']) {
+      config.fields[section].custom = [{ key: 'scan', label: 'Scan', type: 'file' }, { key: 'paper', label: 'Paper', type: 'file', accept: 'documents' }];
+    }
+    const { success, data } = parseTenantConfig(config);
+    assert.equal(success, true);
+    assert.deepEqual(data.fields.payments.custom[0], { key: 'scan', label: 'Scan', type: 'file', required: false, active: true, showInList: false, helpText: '', accept: 'images' });
+    assert.equal(data.fields.costs.custom[1].accept, 'documents');
+
+    const bad = withCustom('renters', [field({ key: 'scan', type: 'file', accept: 'videos' }), field({ key: 'paper', type: 'file', maxLength: 10 })]);
+    assert.deepEqual(paths(bad).sort(), ['fields.renters.custom[0].accept', 'fields.renters.custom[1]']);
+  });
+
   it('allows at most 20 custom fields per section', () => {
     const config = withCustom('costs', Array.from({ length: 21 }, (_, index) => field({ key: `field${index}` })));
     assert.deepEqual(paths(config), ['fields.costs.custom']);
