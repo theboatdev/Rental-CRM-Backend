@@ -50,6 +50,14 @@ const FILE_KINDS = {
     allowedFormats: PHOTO_FORMATS,
     format: 'jpg',
     transformation: 'c_limit,h_1600,w_1600'
+  },
+  /** Vehicle compliance documents: insurance policies, revenue licences, etc. */
+  vehicleDocument: {
+    folder: 'vehicle-documents',
+    module: 'vehicles',
+    permissions: ['vehicles:create', 'vehicles:update'],
+    readPermission: 'vehicles:read',
+    allowedFormats: DOCUMENT_FORMATS
   }
 };
 

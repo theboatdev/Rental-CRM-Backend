@@ -24,8 +24,9 @@ const customFieldBytes = [
 
 /**
  * Adds up the bytes of a tenant's files (document scans, inspection photos,
- * bills, vehicle photos, files of custom fields) into `usage.storageGb`,
- * shown against `limits.storageGb`. Uploads are refused once it reaches the limit.
+ * bills, vehicle photos, vehicle documents, files of custom fields) into
+ * `usage.storageGb`, shown against `limits.storageGb`. Uploads are refused
+ * once it reaches the limit.
  */
 async function refreshStorageUsage({ Tenant, tenantId, models }) {
   const { Renter, Rental, VehicleCost, Vehicle, Payment } = models;
@@ -35,6 +36,7 @@ async function refreshStorageUsage({ Tenant, tenantId, models }) {
     bytesOf(Rental, [{ $project: { bytes: { $add: [photoBytes('pickupInspection'), photoBytes('dropInspection')] } } }]),
     bytesOf(VehicleCost, [{ $project: { bytes: '$billFile.bytes' } }]),
     bytesOf(Vehicle, [{ $project: { bytes: '$photo.bytes' } }]),
+    bytesOf(Vehicle, [{ $unwind: '$documents' }, { $project: { bytes: '$documents.file.bytes' } }]),
     ...[Vehicle, Renter, Rental, Payment, VehicleCost].map((Model) => bytesOf(Model, customFieldBytes))
   ]);
   const storageGb = Math.round((totals.reduce((sum, bytes) => sum + bytes, 0) / GB) * 10_000) / 10_000;

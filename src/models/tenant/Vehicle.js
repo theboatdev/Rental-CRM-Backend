@@ -2,6 +2,18 @@ const { Schema } = require('mongoose');
 const fileSchema = require('./file');
 const { VEHICLE_STATUSES, TRANSMISSIONS, FUEL_TYPES } = require('./enums');
 
+/**
+ * One compliance document attached to a vehicle (e.g. insurance policy, revenue licence).
+ * `type` is a key from `lists.vehicleDocumentTypes` in the tenant's config.
+ */
+const vehicleDocumentSchema = new Schema({
+  type: { type: String, required: true }, // key from lists.vehicleDocumentTypes
+  number: { type: String, trim: true }, // policy / licence number (optional)
+  expiresAt: { type: Date }, // expiry date; drives document_expiry dashboard alerts
+  file: { type: fileSchema }, // the scan / certificate, in Cloudinary
+  uploadedAt: { type: Date, default: Date.now }
+});
+
 // Amounts are in the tenant's locale.currency, distances in locale.distanceUnit.
 const vehicleSchema = new Schema(
   {
@@ -19,12 +31,14 @@ const vehicleSchema = new Schema(
     thumbnail: { type: String }, // the photo's public URL; older vehicles may have one typed in, without a `photo`
     photo: { type: fileSchema }, // the uploaded photo, public in Cloudinary under tenants/<tenantId>/vehicles/
     notes: { type: String },
-    customFields: { type: Schema.Types.Mixed } // values of the config's customFields, by field key
+    customFields: { type: Schema.Types.Mixed }, // values of the config's customFields, by field key
+    documents: [vehicleDocumentSchema] // compliance documents (insurance, revenue licence, etc.)
   },
   { collection: 'vehicles', timestamps: true }
 );
 
 vehicleSchema.index({ plateNumber: 1 }, { unique: true });
 vehicleSchema.index({ status: 1 });
+vehicleSchema.index({ 'documents.expiresAt': 1 }); // for expiry alert queries
 
 module.exports = vehicleSchema;

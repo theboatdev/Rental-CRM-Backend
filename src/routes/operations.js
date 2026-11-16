@@ -41,6 +41,11 @@ function registerOperationRoutes(router, { platformDb, digests, loadLogo }) {
   router.patch('/vehicles/:id', guard('vehicles', 'vehicles:update'), handle((req) => vehicles.updateVehicle(contextOf(req), req.params.id, req.body)));
   router.delete('/vehicles/:id', guard('vehicles', 'vehicles:delete'), handle((req) => vehicles.deleteVehicle(contextOf(req), req.params.id)));
 
+  // Vehicle compliance documents (insurance, revenue licence, etc.).
+  router.post('/vehicles/:id/documents', guard('vehicles', 'vehicles:update'), handle((req) => vehicles.addVehicleDocument(contextOf(req), req.params.id, req.body), 201));
+  router.put('/vehicles/:id/documents/:documentId/file', guard('vehicles', 'vehicles:update'), handle((req) => vehicles.attachVehicleDocumentFile(contextOf(req), req.params.id, req.params.documentId, req.body)));
+  router.patch('/vehicles/:id/documents/:documentId', guard('vehicles', 'vehicles:update'), handle((req) => vehicles.updateVehicleDocument(contextOf(req), req.params.id, req.params.documentId, req.body)));
+
   router.get('/renters', guard('renters', 'renters:read'), handle((req) => renters.listRenters(contextOf(req))));
   router.get('/renters/:id', guard('renters', 'renters:read'), handle((req) => renters.getRenter(contextOf(req), req.params.id)));
   router.post('/renters', guard('renters', 'renters:create'), handle((req) => renters.createRenter(contextOf(req), req.body), 201));

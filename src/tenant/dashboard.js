@@ -50,6 +50,20 @@ function alertsFor(ctx, { vehicles, lifetime, open }, today) {
       const last = lifetime.of(v._id).lastServiceOdometer;
       alerts.push({ kind: 'service_due', vehicleId: String(v._id), title: `${v.plateNumber} is due a service`, detail: `${v.mileage} on the odometer; last service ${last != null ? `at ${last}` : 'not recorded'}` });
     }
+
+    // Document expiry: alert within the configured lead days (default 7) and when already expired.
+    for (const doc of v.documents ?? []) {
+      if (!doc.expiresAt) continue;
+      const expiryDate = dateString(doc.expiresAt);
+      const docType = (ctx.config.lists.vehicleDocumentTypes ?? []).find((t) => t.key === doc.type);
+      const leadDays = docType?.alertDaysBefore ?? 7;
+      const alertFrom = addDays(today, leadDays);
+      if (expiryDate <= today) {
+        alerts.push({ kind: 'document_expiry', vehicleId: String(v._id), title: `${v.plateNumber} has an expired document`, detail: `${docType?.label ?? doc.type} expired on ${expiryDate}` });
+      } else if (expiryDate <= alertFrom) {
+        alerts.push({ kind: 'document_expiry', vehicleId: String(v._id), title: `${v.plateNumber} has a document expiring soon`, detail: `${docType?.label ?? doc.type} expires on ${expiryDate}` });
+      }
+    }
   }
   return alerts;
 }

@@ -144,6 +144,12 @@ const DocumentTypeSchema = ListItemSchema.extend({
   requiredFor: z.array(z.enum(RESIDENT_TYPES)).default([])
 });
 
+/** One kind of compliance document a vehicle must carry (e.g. insurance, revenue licence). */
+const VehicleDocumentTypeSchema = ListItemSchema.extend({
+  /** Days before expiry to show a document_expiry alert on the dashboard (default 7). */
+  alertDaysBefore: z.number().int().min(1).max(365).default(7)
+});
+
 function uniqueKeys(items, ctx) {
   const seen = new Set();
   items.forEach((entry, index) => {
@@ -159,7 +165,9 @@ const keyedList = (item) => z.array(item).min(1).superRefine(uniqueKeys);
 const ListsSchema = z.strictObject({
   documentTypes: keyedList(DocumentTypeSchema),
   paymentMethods: keyedList(ListItemSchema),
-  costCategories: keyedList(ListItemSchema)
+  costCategories: keyedList(ListItemSchema),
+  /** Vehicle compliance document types (e.g. insurance, revenue licence). May be empty. */
+  vehicleDocumentTypes: z.array(VehicleDocumentTypeSchema).superRefine(uniqueKeys).default([])
 });
 
 const RulesSchema = z.strictObject({

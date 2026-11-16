@@ -1,8 +1,8 @@
 const { z } = require('zod');
 const { TRANSMISSIONS, FUEL_TYPES } = require('../models/tenant/enums');
-const { conflict } = require('../platform/errors');
+const { conflict, notFound } = require('../platform/errors');
 const { refreshVehicleUsage, refreshStorageUsage } = require('../platform/usage');
-const { findOr404, can, moduleOn } = require('./common');
+const { parse, findOr404, can, moduleOn, activeListKey, IdSchema, DateStringSchema } = require('./common');
 const { presentVehicle, presentRental, presentCost, presentFuelLog } = require('./presenters');
 const { vehicleTotals, presentTotals } = require('./metrics');
 const { recordAudit } = require('./audit');
@@ -26,6 +26,18 @@ const VEHICLE_FIELDS = {
 /** `thumbnail` takes an uploaded photo (POST /uploads { kind: 'vehiclePhoto' }), or null to remove it. */
 const photoInput = (ctx) => fileInput(ctx, 'vehiclePhoto').nullable();
 
+/**
+ * One compliance document on a vehicle.  `type` must be an active key from
+ * `lists.vehicleDocumentTypes`.  `file` and `expiresAt` are both optional on
+ * creation so staff can fill them in later from the dossier.
+ */
+const VehicleDocumentInputSchema = (ctx) =>
+  z.strictObject({
+    type: activeListKey(ctx.config, 'vehicleDocumentTypes'),
+    expiresAt: DateStringSchema.optional(),
+    file: fileInput(ctx, 'vehicleDocument').optional()
+  });
+
 const VehicleInputSchema = (ctx) =>
   z.strictObject({
     ...VEHICLE_FIELDS,
@@ -38,8 +50,17 @@ const VehicleInputSchema = (ctx) =>
     mileage: VEHICLE_FIELDS.mileage.default(0),
     thumbnail: photoInput(ctx).optional(),
     notes: VEHICLE_FIELDS.notes.default(''),
+    documents: z.array(VehicleDocumentInputSchema(ctx)).max(20).default([]),
     customFields: customFieldsInput(ctx, 'vehicles')
   });
+
+/** Update the expiry date on an existing document. */
+const VehicleDocumentUpdateSchema = z.strictObject({
+  expiresAt: DateStringSchema.nullable().optional()
+});
+
+/** Signed upload replacement for one vehicle document file. */
+const VehicleDocumentFileSchema = (ctx) => z.strictObject({ file: fileInput(ctx, 'vehicleDocument') });
 
 /** RENTED is set by check-in and cleared by a return, never by hand. */
 const VehicleUpdateSchema = (ctx) =>
@@ -114,7 +135,7 @@ function createVehicles({ platformDb }) {
         throw error;
       }
       await refreshUsage(ctx);
-      if (data.photo || customFieldFiles(data.customFields).length) await refreshStorage(ctx);
+      if (data.photo || data.documents.some((d) => d.file) || customFieldFiles(data.customFields).length) await refreshStorage(ctx);
       await recordAudit(ctx, { action: 'vehicle.created', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Added ${vehicle.plateNumber} (${vehicle.make} ${vehicle.model})` });
       return presentVehicle(vehicle.toObject(), ctx);
     },
@@ -156,18 +177,83 @@ function createVehicles({ platformDb }) {
       if (rentals || costs || fuelLogs) {
         throw conflict(`${vehicle.plateNumber} has rentals, costs or fuel logs, so it can't be deleted. Set it to maintenance instead.`);
       }
+      const documentFiles = (vehicle.documents ?? []).map((d) => d.file).filter(Boolean);
+      const fieldFiles = customFieldFiles(vehicle.customFields);
       await ctx.models.Vehicle.deleteOne({ _id: vehicle._id });
       await refreshUsage(ctx);
-      const fieldFiles = customFieldFiles(vehicle.customFields);
-      if (vehicle.photo || fieldFiles.length) {
+      if (vehicle.photo || documentFiles.length || fieldFiles.length) {
         await discardFiles(ctx, [vehicle.photo], 'vehiclePhoto');
+        await discardFiles(ctx, documentFiles, 'vehicleDocument');
         await discardFieldFiles(ctx, fieldFiles);
         await refreshStorage(ctx);
       }
       await recordAudit(ctx, { action: 'vehicle.deleted', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Deleted ${vehicle.plateNumber}` });
       return { id: String(vehicle._id), deleted: true };
+    },
+
+    // -------------------------------------------------------------------------
+    // Vehicle document management
+    // -------------------------------------------------------------------------
+
+    /** Adds a new compliance document to a vehicle. */
+    async addVehicleDocument(ctx, vehicleId, input) {
+      const vehicle = await findOr404(ctx.models.Vehicle, vehicleId, 'Vehicle');
+      const document = parse(VehicleDocumentInputSchema(ctx), input);
+      const updated = await ctx.models.Vehicle.findOneAndUpdate(
+        { _id: vehicle._id },
+        { $push: { documents: document } },
+        { returnDocument: 'after', runValidators: true }
+      ).lean();
+      if (document.file) await refreshStorage(ctx);
+      const scan = document.file ? ' with file' : '';
+      await recordAudit(ctx, { action: 'vehicle.document_added', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Added ${document.type} document${scan} to ${vehicle.plateNumber}` });
+      return presentVehicle(updated, ctx);
+    },
+
+    /** Replaces the file of an existing vehicle document, discarding the old one. */
+    async attachVehicleDocumentFile(ctx, vehicleId, documentId, input) {
+      const vehicle = await findOr404(ctx.models.Vehicle, vehicleId, 'Vehicle');
+      const document = findVehicleDocument(vehicle, documentId);
+      const { file } = parse(VehicleDocumentFileSchema(ctx), input);
+      const updated = await ctx.models.Vehicle.findOneAndUpdate(
+        { _id: vehicle._id, 'documents._id': document._id },
+        { $set: { 'documents.$.file': file } },
+        { returnDocument: 'after' }
+      ).lean();
+      await discardFiles(ctx, [document.file], 'vehicleDocument');
+      await refreshStorage(ctx);
+      await recordAudit(ctx, {
+        action: 'vehicle.document_file_attached',
+        entityType: 'vehicle',
+        entityId: String(vehicle._id),
+        summary: `${document.file ? 'Replaced' : 'Attached'} the file of ${vehicle.plateNumber}'s ${document.type}`
+      });
+      return presentVehicle(updated, ctx);
+    },
+
+    /** Updates the expiry date of an existing vehicle document. */
+    async updateVehicleDocument(ctx, vehicleId, documentId, input) {
+      const vehicle = await findOr404(ctx.models.Vehicle, vehicleId, 'Vehicle');
+      const document = findVehicleDocument(vehicle, documentId);
+      const changes = parse(VehicleDocumentUpdateSchema, input);
+      const $set = {};
+      if (changes.expiresAt !== undefined) $set['documents.$.expiresAt'] = changes.expiresAt ? new Date(`${changes.expiresAt}T00:00:00.000Z`) : null;
+      const updated = await ctx.models.Vehicle.findOneAndUpdate(
+        { _id: vehicle._id, 'documents._id': document._id },
+        { $set },
+        { returnDocument: 'after' }
+      ).lean();
+      await recordAudit(ctx, { action: 'vehicle.document_updated', entityType: 'vehicle', entityId: String(vehicle._id), summary: `Updated ${vehicle.plateNumber}'s ${document.type} document` });
+      return presentVehicle(updated, ctx);
     }
   };
+}
+
+function findVehicleDocument(vehicle, documentId) {
+  const { success } = IdSchema.safeParse(documentId);
+  const document = success && (vehicle.documents ?? []).find((d) => String(d._id) === documentId);
+  if (!document) throw notFound('Document not found');
+  return document;
 }
 
 module.exports = { createVehicles };

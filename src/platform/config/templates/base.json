@@ -75,6 +75,10 @@
       { "key": "REGISTRATION", "label": "Registration & Licensing", "active": true },
       { "key": "ACCIDENT_REPAIR", "label": "Accident Repair / Bodywork", "active": true },
       { "key": "OTHER", "label": "Other", "active": true }
+    ],
+    "vehicleDocumentTypes": [
+      { "key": "INSURANCE", "label": "Insurance", "active": true, "alertDaysBefore": 7 },
+      { "key": "REGISTRATION", "label": "Registration / Licence", "active": true, "alertDaysBefore": 7 }
     ]
   },
   "rules": {

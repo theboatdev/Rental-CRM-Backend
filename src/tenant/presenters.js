@@ -18,6 +18,15 @@ const idOf = (value) => (value?._id ? String(value._id) : value ? String(value) 
 const vehicleRef = (v) => (v?._id ? { id: String(v._id), plateNumber: v.plateNumber, make: v.make, model: v.model } : null);
 const renterRef = (r) => (r?._id ? { id: String(r._id), profileId: r.profileId, fullName: r.fullName, phone: r.phone } : null);
 
+/** A vehicle compliance document as the API returns it. `file.url` is a short-lived link. */
+const presentVehicleDocument = (d, ctx) => ({
+  id: String(d._id),
+  type: d.type,
+  expiresAt: d.expiresAt ? dateString(d.expiresAt) : null,
+  file: fileView(ctx, d.file, 'vehicles:read'),
+  uploadedAt: iso(d.uploadedAt)
+});
+
 const presentVehicle = (v, ctx) => ({
   id: String(v._id),
   plateNumber: v.plateNumber,
@@ -34,6 +43,7 @@ const presentVehicle = (v, ctx) => ({
   thumbnail: v.thumbnail ?? null,
   notes: v.notes ?? '',
   customFields: presentCustomFields(ctx, v.customFields, 'vehicles:read'),
+  documents: (v.documents ?? []).map((d) => presentVehicleDocument(d, ctx)),
   createdAt: iso(v.createdAt),
   updatedAt: iso(v.updatedAt)
 });
@@ -197,6 +207,7 @@ module.exports = {
   vehicleRef,
   renterRef,
   presentVehicle,
+  presentVehicleDocument,
   presentRenter,
   presentDocument,
   presentRental,
