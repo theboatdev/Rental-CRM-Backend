@@ -66,6 +66,7 @@ function registerOperationRoutes(router, { platformDb, digests, loadLogo }) {
   router.get('/rentals/:id', guard('rentals', 'rentals:read'), handle((req) => rentals.getRental(contextOf(req), req.params.id)));
   router.post('/rentals', guard('rentals', 'rentals:create'), handle((req) => rentals.reserve(contextOf(req), req.body), 201));
   router.patch('/rentals/:id', guard('rentals', 'rentals:create'), handle((req) => rentals.updateRental(contextOf(req), req.params.id, req.body)));
+  router.post('/rentals/:id/assign-vehicle', guard('rentals', 'rentals:create'), handle((req) => rentals.assignVehicle(contextOf(req), req.params.id, req.body)));
   router.post('/rentals/:id/check-in', guard('rentals', 'rentals:checkin'), handle((req) => rentals.checkIn(contextOf(req), req.params.id, req.body)));
   router.post('/rentals/:id/return', guard('rentals', 'rentals:return'), handle((req) => rentals.returnRental(contextOf(req), req.params.id, req.body)));
   router.post('/rentals/:id/cancel', guard('rentals', 'rentals:cancel'), handle((req) => rentals.cancel(contextOf(req), req.params.id)));

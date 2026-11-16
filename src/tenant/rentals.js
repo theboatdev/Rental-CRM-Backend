@@ -51,9 +51,14 @@ const CheckInSchema = (ctx) => InspectionSchema(ctx).extend({ confirmFullPayment
 
 const ReturnSchema = (ctx) => z.strictObject({ ...InspectionSchema(ctx).shape, odometer: z.number().int().min(0) });
 
+const MakeModelSchema = z.string().trim().min(1).max(80);
+
 const ReservationSchema = (ctx) =>
   z.strictObject({
-    vehicleId: IdSchema,
+    // Either a specific plate, or a make+model class hold (see reservationMode).
+    vehicleId: IdSchema.optional(),
+    requestedMake: MakeModelSchema.optional(),
+    requestedModel: MakeModelSchema.optional(),
     renterId: IdSchema,
     startDate: DateStringSchema,
     endDate: DateStringSchema,
@@ -72,8 +77,12 @@ const ReservationSchema = (ctx) =>
     notes: z.string().trim().max(1000).default(''),
     customFields: customFieldsInput(ctx, 'rentals'),
     // Hand the vehicle over straight away (needs rentals:checkin): booking and check-in in one step.
+    // Only allowed when a specific vehicleId is provided.
     pickup: CheckInSchema(ctx).optional()
   });
+
+/** Assign (or reassign) a plate to a RESERVED booking that was held by make/model. */
+const AssignVehicleSchema = z.strictObject({ vehicleId: IdSchema });
 
 /** Notes and custom fields stay editable whatever the rental's status; dates and amounts don't change here. */
 const RentalUpdateSchema = (ctx) =>
@@ -82,6 +91,10 @@ const RentalUpdateSchema = (ctx) =>
 const AvailabilityQuerySchema = z.strictObject({ startDate: DateStringSchema, endDate: DateStringSchema, excludeRentalId: IdSchema.optional() });
 
 const POPULATE = { vehicle: 'plateNumber make model', renter: 'profileId fullName phone' };
+
+const reservationModeOf = (ctx) => ctx.config.modules.rentals.reservationMode ?? 'specificVehicle';
+
+const classKey = (make, model) => `${make.trim().toLowerCase()}\0${model.trim().toLowerCase()}`;
 
 /** The first day a rental no longer holds its vehicle. An active rental holds it until it's returned, even past its end date. */
 function heldUntil(rental, today) {
@@ -103,6 +116,80 @@ async function findOverlap(ctx, { vehicleId, startDate, endDate, excludeId, sess
     .session(session ?? null)
     .lean();
   return candidates.find((rental) => heldUntil(rental, today) > startDate) ?? null;
+}
+
+/**
+ * Unassigned make/model holds that overlap [startDate, endDate).
+ * These consume pool capacity without locking a plate yet.
+ */
+async function findClassHolds(ctx, { make, model, startDate, endDate, excludeId, session }) {
+  const today = todayIn(ctx.timezone);
+  const candidates = await ctx.models.Rental.find({
+    vehicle: null,
+    status: 'RESERVED',
+    requestedMake: new RegExp(`^${escapeRegex(make.trim())}$`, 'i'),
+    requestedModel: new RegExp(`^${escapeRegex(model.trim())}$`, 'i'),
+    startDate: { $lt: toDate(endDate) },
+    ...(excludeId ? { _id: { $ne: excludeId } } : {})
+  })
+    .session(session ?? null)
+    .lean();
+  return candidates.filter((rental) => heldUntil(rental, today) > startDate);
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * How many plates of this make/model are free for the dates, minus overlapping
+ * unassigned class holds. `sample` is a free vehicle used for default rates.
+ */
+async function classAvailability(ctx, { make, model, startDate, endDate, excludeId, session }) {
+  const pool = await ctx.models.Vehicle.find({
+    make: new RegExp(`^${escapeRegex(make.trim())}$`, 'i'),
+    model: new RegExp(`^${escapeRegex(model.trim())}$`, 'i'),
+    status: { $ne: 'MAINTENANCE' }
+  })
+    .session(session ?? null)
+    .lean();
+  const free = [];
+  for (const vehicle of pool) {
+    const overlap = await findOverlap(ctx, { vehicleId: vehicle._id, startDate, endDate, excludeId, session });
+    if (!overlap) free.push(vehicle);
+  }
+  const holds = await findClassHolds(ctx, { make, model, startDate, endDate, excludeId, session });
+  const availableCount = Math.max(0, free.length - holds.length);
+  // Prefer the cheapest free plate for default rate/deposit.
+  const sample = [...free].sort((a, b) => a.dailyRate - b.dailyRate || a.depositAmount - b.depositAmount)[0] ?? null;
+  return {
+    make: sample?.make ?? make.trim(),
+    model: sample?.model ?? model.trim(),
+    fleetCount: pool.length,
+    freePlates: free.length,
+    classHolds: holds.length,
+    availableCount,
+    sample,
+    free
+  };
+}
+
+/** Ensures booking a specific plate still leaves enough free plates for existing class holds. */
+async function assertPlateLeavesClassCapacity(ctx, vehicle, { startDate, endDate, excludeId, session }) {
+  const capacity = await classAvailability(ctx, {
+    make: vehicle.make,
+    model: vehicle.model,
+    startDate,
+    endDate,
+    excludeId,
+    session
+  });
+  // This plate is currently counted as free; taking it reduces freePlates by 1.
+  if (capacity.freePlates - 1 < capacity.classHolds) {
+    throw conflict(
+      `Can't book ${vehicle.plateNumber}: ${capacity.classHolds} unassigned ${vehicle.make} ${vehicle.model} reservation(s) still need a plate for these dates`
+    );
+  }
 }
 
 /**
@@ -159,6 +246,44 @@ function bookingDays(ctx, { startDate, endDate }) {
 }
 
 /**
+ * Validates reservationMode against the payload: specific plate, make+model
+ * class hold, or either when mode is `both`.
+ */
+function resolveReservationTarget(ctx, data) {
+  const mode = reservationModeOf(ctx);
+  const hasVehicle = Boolean(data.vehicleId);
+  const hasClass = Boolean(data.requestedMake && data.requestedModel);
+  if (hasVehicle && hasClass) {
+    throw invalid('Choose either a specific vehicle or a make and model, not both', [
+      { path: 'vehicleId', message: 'Pick one style of reservation' }
+    ]);
+  }
+  if (hasVehicle) {
+    if (mode === 'vehicleClass') {
+      throw invalid('This tenant reserves by make and model; pick a vehicle class instead of a plate', [
+        { path: 'vehicleId', message: 'Not allowed in vehicleClass mode' }
+      ]);
+    }
+    return { kind: 'vehicle', vehicleId: data.vehicleId };
+  }
+  if (hasClass) {
+    if (mode === 'specificVehicle') {
+      throw invalid('This tenant requires a specific vehicle registration', [
+        { path: 'requestedMake', message: 'Not allowed in specificVehicle mode' }
+      ]);
+    }
+    return { kind: 'class', make: data.requestedMake, model: data.requestedModel };
+  }
+  if (mode === 'vehicleClass') {
+    throw invalid('Choose a vehicle make and model', [
+      { path: 'requestedMake', message: 'Required' },
+      { path: 'requestedModel', message: 'Required' }
+    ]);
+  }
+  throw invalid('Choose a vehicle', [{ path: 'vehicleId', message: 'Required' }]);
+}
+
+/**
  * Inside a transaction: books a vehicle for a renter, after locking the
  * vehicle and checking it's free for the dates. The rate and deposit default
  * to the vehicle's. Returns the new RESERVED rental with its vehicle and renter.
@@ -173,6 +298,7 @@ async function bookWithin(ctx, session, data, { source = 'COUNTER' } = {}) {
   if (vehicle.status === 'MAINTENANCE') throw conflict(`${vehicle.plateNumber} is in maintenance`);
   const overlap = await findOverlap(ctx, { vehicleId: vehicle._id, startDate: data.startDate, endDate: data.endDate, session });
   if (overlap) throw conflict(`Conflicts with ${describeBooking(overlap, today)}`);
+  await assertPlateLeavesClassCapacity(ctx, vehicle, { startDate: data.startDate, endDate: data.endDate, session });
 
   const dailyRate = data.dailyRate ?? vehicle.dailyRate;
   const depositAmount = data.depositAmount ?? vehicle.depositAmount;
@@ -183,6 +309,8 @@ async function bookWithin(ctx, session, data, { source = 'COUNTER' } = {}) {
         code,
         renter: renter._id,
         vehicle: vehicle._id,
+        requestedMake: vehicle.make,
+        requestedModel: vehicle.model,
         status: 'RESERVED',
         source,
         startDate: toDate(data.startDate),
@@ -202,6 +330,63 @@ async function bookWithin(ctx, session, data, { source = 'COUNTER' } = {}) {
   return { rental: created.toObject(), vehicle, renter };
 }
 
+/**
+ * Inside a transaction: holds capacity for a make/model without assigning a
+ * plate. Rate/deposit default from the cheapest free vehicle in that class.
+ */
+async function bookClassWithin(ctx, session, data, { source = 'COUNTER' } = {}) {
+  const totalDays = bookingDays(ctx, data);
+  const today = todayIn(ctx.timezone);
+  const lockKey = `class:${classKey(data.requestedMake, data.requestedModel)}`;
+  await lock(ctx, lockKey, session);
+  const capacity = await classAvailability(ctx, {
+    make: data.requestedMake,
+    model: data.requestedModel,
+    startDate: data.startDate,
+    endDate: data.endDate,
+    session
+  });
+  if (capacity.fleetCount === 0) {
+    throw invalid(`No ${data.requestedMake} ${data.requestedModel} vehicles in the fleet`, [
+      { path: 'requestedMake', message: 'Unknown make/model' }
+    ]);
+  }
+  if (capacity.availableCount < 1) {
+    throw conflict(
+      `No ${capacity.make} ${capacity.model} left for these dates (${capacity.freePlates} free plate(s), ${capacity.classHolds} unassigned hold(s))`
+    );
+  }
+  const renter = await findOr404(ctx.models.Renter, data.renterId, 'Renter', { session });
+  const dailyRate = data.dailyRate ?? capacity.sample.dailyRate;
+  const depositAmount = data.depositAmount ?? capacity.sample.depositAmount;
+  const code = await nextCode(ctx, { prefix: ctx.config.rules.codePrefixes.booking, sequence: 'booking', year: today.slice(0, 4), session });
+  const [created] = await ctx.models.Rental.create(
+    [
+      {
+        code,
+        renter: renter._id,
+        vehicle: null,
+        requestedMake: capacity.make,
+        requestedModel: capacity.model,
+        status: 'RESERVED',
+        source,
+        startDate: toDate(data.startDate),
+        endDate: toDate(data.endDate),
+        totalDays,
+        dailyRate,
+        totalAmount: totalDays * dailyRate,
+        depositAmount,
+        paidAmount: 0,
+        createdBy: ctx.actor,
+        notes: data.notes ?? '',
+        customFields: data.customFields
+      }
+    ],
+    { session }
+  );
+  return { rental: created.toObject(), vehicle: null, renter, requestedMake: capacity.make, requestedModel: capacity.model };
+}
+
 function createRentals({ platformDb }) {
   const refreshStorage = (ctx) => refreshStorageUsage({ Tenant: platformDb.models.Tenant, tenantId: ctx.tenantId, models: ctx.models });
 
@@ -209,6 +394,9 @@ function createRentals({ platformDb }) {
   async function checkInWithin(ctx, session, rental, input) {
     const today = todayIn(ctx.timezone);
     if (rental.status !== 'RESERVED') throw conflict(`${rental.code} isn't waiting for pickup any more`);
+    if (!rental.vehicle) {
+      throw conflict(`${rental.code} still needs a vehicle assigned before handover`);
+    }
     await lock(ctx, `vehicle:${rental.vehicle}`, session);
     const vehicle = await findOr404(ctx.models.Vehicle, rental.vehicle, 'Vehicle', { session });
     const start = dateString(rental.startDate);
@@ -266,12 +454,16 @@ function createRentals({ platformDb }) {
     },
 
     /**
-     * Books a vehicle for a renter. The rate and deposit default to the
-     * vehicle's. Optionally records an advance and hands the vehicle over at
-     * once, all in one transaction.
+     * Books a vehicle or a make/model class hold for a renter. Rate and deposit
+     * default from the vehicle (or the cheapest free vehicle in the class).
+     * Optionally records an advance and hands over at once (specific plate only).
      */
     async reserve(ctx, input) {
       const data = parseRecord(ReservationSchema(ctx), input, ctx.config, 'rentals', { nested: { advance: 'payments' } });
+      const target = resolveReservationTarget(ctx, data);
+      if (data.pickup && target.kind !== 'vehicle') {
+        throw invalid('Handing over now needs a specific vehicle registration', [{ path: 'pickup', message: 'Assign a plate first' }]);
+      }
       if (data.pickup && !can(ctx, 'rentals:checkin')) throw forbidden("You don't have the rentals:checkin permission");
       if (data.advance && !(moduleOn(ctx, 'payments') && can(ctx, 'payments:record'))) throw forbidden("You don't have the payments:record permission");
       bookingDays(ctx, data);
@@ -280,13 +472,19 @@ function createRentals({ platformDb }) {
       let summary;
       let photos = false;
       await inTransaction(ctx, async (session) => {
-        const booked = await bookWithin(ctx, session, data);
+        const booked =
+          target.kind === 'vehicle'
+            ? await bookWithin(ctx, session, data)
+            : await bookClassWithin(ctx, session, data);
         let { rental } = booked;
         if (data.advance && data.advance.amount > rental.totalAmount + rental.depositAmount) {
           throw invalid('The advance is more than the rental and deposit together', [{ path: 'advance.amount', message: 'More than is owed' }]);
         }
         rentalId = rental._id;
-        summary = `Booked ${booked.vehicle.plateNumber} for ${booked.renter.fullName} as ${rental.code}, ${data.startDate} to ${data.endDate}`;
+        const vehicleLabel = booked.vehicle
+          ? booked.vehicle.plateNumber
+          : `${booked.requestedMake} ${booked.requestedModel} (unassigned)`;
+        summary = `Booked ${vehicleLabel} for ${booked.renter.fullName} as ${rental.code}, ${data.startDate} to ${data.endDate}`;
         if (data.advance) {
           await recordPaymentIn(ctx, session, rental, { type: 'ADVANCE', ...data.advance });
           rental = { ...rental, paidAmount: data.advance.amount };
@@ -301,6 +499,76 @@ function createRentals({ platformDb }) {
       if (photos || fieldFiles.length) await refreshStorage(ctx);
       await recordAudit(ctx, { action: data.pickup ? 'rental.dispatched' : 'rental.reserved', entityType: 'rental', entityId: String(rentalId), summary });
       return getRental(ctx, String(rentalId));
+    },
+
+    /**
+     * Assigns a plate to a RESERVED make/model hold (or reassigns while still
+     * reserved). Required before check-in when the booking has no vehicle yet.
+     */
+    async assignVehicle(ctx, rentalId, input) {
+      const { vehicleId } = parse(AssignVehicleSchema, input);
+      let summary;
+      await inTransaction(ctx, async (session) => {
+        const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental', { session });
+        if (rental.status !== 'RESERVED') {
+          throw conflict(`Only a reservation can get a vehicle assigned; ${rental.code} is ${rental.status.toLowerCase()}`);
+        }
+        await lock(ctx, `rental:${rental._id}`, session);
+        await lock(ctx, `vehicle:${vehicleId}`, session);
+        if (rental.requestedMake && rental.requestedModel) {
+          await lock(ctx, `class:${classKey(rental.requestedMake, rental.requestedModel)}`, session);
+        }
+        const vehicle = await findOr404(ctx.models.Vehicle, vehicleId, 'Vehicle', { session });
+        if (vehicle.status === 'MAINTENANCE') throw conflict(`${vehicle.plateNumber} is in maintenance`);
+        if (rental.requestedMake && rental.requestedModel) {
+          const sameClass =
+            vehicle.make.toLowerCase() === rental.requestedMake.toLowerCase() &&
+            vehicle.model.toLowerCase() === rental.requestedModel.toLowerCase();
+          if (!sameClass) {
+            throw invalid(
+              `${vehicle.plateNumber} is a ${vehicle.make} ${vehicle.model}, but this reservation is for ${rental.requestedMake} ${rental.requestedModel}`,
+              [{ path: 'vehicleId', message: 'Wrong make/model' }]
+            );
+          }
+        }
+        const startDate = dateString(rental.startDate);
+        const endDate = dateString(rental.endDate);
+        const today = todayIn(ctx.timezone);
+        const overlap = await findOverlap(ctx, { vehicleId: vehicle._id, startDate, endDate, excludeId: rental._id, session });
+        if (overlap) throw conflict(`Conflicts with ${describeBooking(overlap, today)}`);
+        // When reassigning from another plate, capacity for the class is unchanged for this rental.
+        // When assigning onto a free plate from an unassigned hold, this rental is already counted
+        // in classHolds, so freePlates must be at least classHolds (this hold + others).
+        if (!rental.vehicle) {
+          const capacity = await classAvailability(ctx, {
+            make: vehicle.make,
+            model: vehicle.model,
+            startDate,
+            endDate,
+            excludeId: rental._id,
+            session
+          });
+          if (capacity.freePlates < 1) {
+            throw conflict(`${vehicle.plateNumber} isn't free for these dates`);
+          }
+        } else if (String(rental.vehicle) !== String(vehicle._id)) {
+          await assertPlateLeavesClassCapacity(ctx, vehicle, { startDate, endDate, excludeId: rental._id, session });
+        }
+        await ctx.models.Rental.updateOne(
+          { _id: rental._id, status: 'RESERVED' },
+          {
+            $set: {
+              vehicle: vehicle._id,
+              requestedMake: vehicle.make,
+              requestedModel: vehicle.model
+            }
+          },
+          { session }
+        );
+        summary = `Assigned ${vehicle.plateNumber} to ${rental.code}`;
+      });
+      await recordAudit(ctx, { action: 'rental.vehicle_assigned', entityType: 'rental', entityId: rentalId, summary });
+      return getRental(ctx, rentalId);
     },
 
     /** Hands the vehicle over. With `confirmFullPayment`, also confirms the renter has paid everything (see fullPaymentBy). */
@@ -402,20 +670,63 @@ function createRentals({ platformDb }) {
       return getRental(ctx, rentalId);
     },
 
-    /** For each vehicle, whether it can be booked for [startDate, endDate), and why not. */
+    /**
+     * Per-vehicle availability for [startDate, endDate), plus make/model class
+     * availability when the tenant allows class holds.
+     */
     async availability(ctx, query) {
       const { startDate, endDate, excludeRentalId } = parse(AvailabilityQuerySchema, query);
       if (daysBetween(startDate, endDate) < 1) throw invalid('The return date must be after the pickup date', [{ path: 'endDate', message: 'Before the pickup date' }]);
       const today = todayIn(ctx.timezone);
+      const mode = reservationModeOf(ctx);
       const vehicles = await ctx.models.Vehicle.find().sort({ plateNumber: 1 }).lean();
-      return Promise.all(
+      const vehiclesOut = await Promise.all(
         vehicles.map(async (vehicle) => {
           const overlap =
             vehicle.status === 'MAINTENANCE' ? null : await findOverlap(ctx, { vehicleId: vehicle._id, startDate, endDate, excludeId: excludeRentalId });
-          const reason = vehicle.status === 'MAINTENANCE' ? 'In maintenance' : overlap ? `Booked: ${describeBooking(overlap, today)}` : null;
+          let reason = vehicle.status === 'MAINTENANCE' ? 'In maintenance' : overlap ? `Booked: ${describeBooking(overlap, today)}` : null;
+          // Soft-block plates that would leave class holds without a free unit.
+          if (!reason) {
+            try {
+              await assertPlateLeavesClassCapacity(ctx, vehicle, { startDate, endDate, excludeId: excludeRentalId });
+            } catch (error) {
+              if (error?.code === 'conflict') reason = error.message;
+              else throw error;
+            }
+          }
           return { vehicle: vehicleRef(vehicle), dailyRate: vehicle.dailyRate, depositAmount: vehicle.depositAmount, available: !reason, reason };
         })
       );
+
+      let classes = [];
+      if (mode === 'vehicleClass' || mode === 'both') {
+        const seen = new Set();
+        for (const vehicle of vehicles) {
+          const key = classKey(vehicle.make, vehicle.model);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const capacity = await classAvailability(ctx, {
+            make: vehicle.make,
+            model: vehicle.model,
+            startDate,
+            endDate,
+            excludeId: excludeRentalId
+          });
+          classes.push({
+            make: capacity.make,
+            model: capacity.model,
+            fleetCount: capacity.fleetCount,
+            availableCount: capacity.availableCount,
+            dailyRate: capacity.sample?.dailyRate ?? vehicle.dailyRate,
+            depositAmount: capacity.sample?.depositAmount ?? vehicle.depositAmount,
+            available: capacity.availableCount > 0,
+            reason: capacity.availableCount > 0 ? null : 'No units left for these dates'
+          });
+        }
+        classes.sort((a, b) => a.make.localeCompare(b.make) || a.model.localeCompare(b.model));
+      }
+
+      return { vehicles: vehiclesOut, classes, reservationMode: mode };
     },
 
     /** One month of the fleet schedule: every vehicle, and the reservations and rentals that touch the month. */
@@ -443,4 +754,4 @@ function createRentals({ platformDb }) {
   };
 }
 
-module.exports = { createRentals, bookWithin, bookingDays, findOverlap };
+module.exports = { createRentals, bookWithin, bookClassWithin, bookingDays, findOverlap, classAvailability };

@@ -109,7 +109,14 @@ const ModulesSchema = z.strictObject({
     ...enabled,
     inspectionPoints: z.array(z.string().trim().min(1).max(60)).min(1).max(20),
     requirePickupInspection: z.boolean().default(true),
-    requireDropInspection: z.boolean().default(true)
+    requireDropInspection: z.boolean().default(true),
+    /**
+     * How counter reservations pick a vehicle:
+     * - specificVehicle: must pick a plate (current default)
+     * - vehicleClass: reserve by make + model; assign a plate later
+     * - both: staff choose per booking
+     */
+    reservationMode: z.enum(['specificVehicle', 'vehicleClass', 'both']).default('specificVehicle')
   }),
   calendar: z.strictObject({ ...enabled }),
   payments: z.strictObject({ ...enabled }),

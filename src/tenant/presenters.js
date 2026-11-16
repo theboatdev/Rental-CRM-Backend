@@ -118,6 +118,7 @@ const owedOn = (rental) => rental.totalAmount + (rental.depositRefunded ? 0 : re
 function presentRental(r, ctx) {
   const today = todayIn(ctx.timezone);
   const endDate = dateString(r.endDate);
+  const vehicle = r.vehicle ? vehicleRef(r.vehicle) ?? { id: idOf(r.vehicle) } : null;
   return {
     id: String(r._id),
     code: r.code,
@@ -125,7 +126,10 @@ function presentRental(r, ctx) {
     status: r.status,
     overdue: r.status === 'ACTIVE' && endDate < today,
     source: r.source,
-    vehicle: vehicleRef(r.vehicle) ?? { id: idOf(r.vehicle) },
+    vehicle,
+    requestedMake: r.requestedMake ?? vehicle?.make ?? null,
+    requestedModel: r.requestedModel ?? vehicle?.model ?? null,
+    needsVehicleAssignment: r.status === 'RESERVED' && !r.vehicle,
     renter: renterRef(r.renter) ?? { id: idOf(r.renter) },
     startDate: dateString(r.startDate),
     endDate,

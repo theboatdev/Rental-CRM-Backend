@@ -215,7 +215,8 @@ describe('bookings', () => {
     assert.equal((await book(vehicle, renter, { startDate: addDays(TODAY, 3), endDate: addDays(TODAY, 4) })).status, 201);
 
     const availability = (await staff('GET', `/vehicles/availability?startDate=${TODAY}&endDate=${addDays(TODAY, 1)}`)).body;
-    assert.equal(availability.find((a) => a.vehicle.id === vehicle.id).available, false);
+    assert.equal(availability.reservationMode, 'specificVehicle');
+    assert.equal(availability.vehicles.find((a) => a.vehicle.id === vehicle.id).available, false);
   });
 
   it('rejects maintenance vehicles, bad dates, short rentals and oversized advances', async () => {
@@ -240,6 +241,90 @@ describe('bookings', () => {
     const renter = await addRenter();
     const results = await Promise.all([book(vehicle, renter), book(vehicle, renter)]);
     assert.deepEqual(results.map((r) => r.status).sort(), [201, 409]);
+  });
+
+  it('reserves by make and model, then assigns a plate before check-in', async () => {
+    await publish(tenantA, (config) => {
+      config.modules.rentals.reservationMode = 'both';
+    });
+    try {
+      const a = await addVehicle({ make: 'Toyota', model: 'Raize', dailyRate: 12000, depositAmount: 25000 });
+      const b = await addVehicle({ make: 'Toyota', model: 'Raize', dailyRate: 11000, depositAmount: 20000 });
+      await addVehicle({ make: 'Toyota', model: 'Raize', dailyRate: 13000, depositAmount: 25000 });
+      const renter = await addRenter();
+
+      const hold = await staff('POST', '/rentals', {
+        requestedMake: 'Toyota',
+        requestedModel: 'Raize',
+        renterId: renter.id,
+        startDate: TODAY,
+        endDate: addDays(TODAY, 3)
+      });
+      assert.equal(hold.status, 201, JSON.stringify(hold.body));
+      assert.equal(hold.body.vehicle, null);
+      assert.equal(hold.body.needsVehicleAssignment, true);
+      assert.equal(hold.body.requestedMake, 'Toyota');
+      assert.equal(hold.body.requestedModel, 'Raize');
+      assert.equal(hold.body.dailyRate, 11000); // cheapest free Raize
+
+      const availability = (await staff('GET', `/vehicles/availability?startDate=${TODAY}&endDate=${addDays(TODAY, 3)}`)).body;
+      assert.equal(availability.reservationMode, 'both');
+      const raize = availability.classes.find((c) => c.make === 'Toyota' && c.model === 'Raize');
+      assert.equal(raize.availableCount, 2);
+      assert.equal(raize.fleetCount, 3);
+
+      assert.match(
+        (await staff('POST', `/rentals/${hold.body.id}/check-in`, { checkedPoints: points })).body.error.message,
+        /needs a vehicle assigned/
+      );
+
+      const assigned = await staff('POST', `/rentals/${hold.body.id}/assign-vehicle`, { vehicleId: a.id });
+      assert.equal(assigned.status, 200, JSON.stringify(assigned.body));
+      assert.equal(assigned.body.vehicle.id, a.id);
+      assert.equal(assigned.body.needsVehicleAssignment, false);
+
+      const wrong = await staff('POST', '/rentals', {
+        requestedMake: 'Toyota',
+        requestedModel: 'Raize',
+        renterId: renter.id,
+        startDate: TODAY,
+        endDate: addDays(TODAY, 3),
+        pickup: { checkedPoints: points }
+      });
+      assert.equal(wrong.status, 422);
+
+      const second = await staff('POST', '/rentals', {
+        requestedMake: 'Toyota',
+        requestedModel: 'Raize',
+        renterId: renter.id,
+        startDate: TODAY,
+        endDate: addDays(TODAY, 3)
+      });
+      assert.equal(second.status, 201);
+      await staff('POST', `/rentals/${second.body.id}/assign-vehicle`, { vehicleId: b.id });
+
+      const third = await staff('POST', '/rentals', {
+        requestedMake: 'Toyota',
+        requestedModel: 'Raize',
+        renterId: renter.id,
+        startDate: TODAY,
+        endDate: addDays(TODAY, 3)
+      });
+      assert.equal(third.status, 201);
+
+      const full = await staff('POST', '/rentals', {
+        requestedMake: 'Toyota',
+        requestedModel: 'Raize',
+        renterId: renter.id,
+        startDate: TODAY,
+        endDate: addDays(TODAY, 3)
+      });
+      assert.equal(full.status, 409);
+    } finally {
+      await publish(tenantA, (config) => {
+        config.modules.rentals.reservationMode = 'specificVehicle';
+      });
+    }
   });
 
   it('checks in within the booking dates, after a full inspection, renting the vehicle out', async () => {
