@@ -102,7 +102,13 @@ const ModulesSchema = z.strictObject({
   vehicles: z.strictObject({
     ...enabled,
     /** Distance between routine services; drives "service due" warnings. */
-    serviceIntervalKm: z.number().int().positive().default(5000)
+    serviceIntervalKm: z.number().int().positive().default(5000),
+    /**
+     * When on: vehicles can be marked OWNED or THIRD_PARTY, bookings for
+     * third-party vehicles capture a supplier rental cost, and profit breaks
+     * into gross (revenue − supplier) and net (gross − operating costs).
+     */
+    thirdPartyVehicles: z.boolean().default(false)
   }),
   renters: z.strictObject({ ...enabled }),
   rentals: z.strictObject({

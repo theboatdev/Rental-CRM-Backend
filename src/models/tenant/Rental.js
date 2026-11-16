@@ -34,6 +34,8 @@ const rentalSchema = new Schema(
     dailyRate: { type: Number, required: true, min: 0 },
     totalAmount: { type: Number, required: true, min: 0 },
     depositAmount: { type: Number, required: true, min: 0 },
+    // Amount payable to a third-party vehicle supplier. Set only when modules.vehicles.thirdPartyVehicles is on and the vehicle is THIRD_PARTY.
+    supplierRentalCost: { type: Number, min: 0 },
     paidAmount: { type: Number, default: 0, min: 0 }, // sum of non-voided payments, updated in the same transaction
     depositRefunded: { type: Boolean, default: false },
     // Staff confirmed the renter had paid everything, usually at pickup. Cleared if the ledger later shows money owed.

@@ -1,6 +1,6 @@
 const { Schema } = require('mongoose');
 const fileSchema = require('./file');
-const { VEHICLE_STATUSES, TRANSMISSIONS, FUEL_TYPES } = require('./enums');
+const { VEHICLE_STATUSES, TRANSMISSIONS, FUEL_TYPES, VEHICLE_OWNERSHIPS } = require('./enums');
 
 /**
  * One compliance document attached to a vehicle (e.g. insurance policy, revenue licence).
@@ -28,6 +28,8 @@ const vehicleSchema = new Schema(
     depositAmount: { type: Number, required: true, min: 0 }, // defaults from rules.defaultDepositAmount when created
     mileage: { type: Number, default: 0, min: 0 },
     status: { type: String, enum: VEHICLE_STATUSES, default: 'AVAILABLE' },
+    // OWNED = company fleet; THIRD_PARTY = supplier-sourced. Defaults OWNED; meaningful when modules.vehicles.thirdPartyVehicles is on.
+    ownership: { type: String, enum: VEHICLE_OWNERSHIPS, default: 'OWNED' },
     thumbnail: { type: String }, // the photo's public URL; older vehicles may have one typed in, without a `photo`
     photo: { type: fileSchema }, // the uploaded photo, public in Cloudinary under tenants/<tenantId>/vehicles/
     notes: { type: String },

@@ -3,13 +3,24 @@ const { toDate, can, moduleOn } = require('./common');
 const inRange = (field, from, to) =>
   from || to ? { [field]: { ...(from ? { $gte: toDate(from) } : {}), ...(to ? { $lte: toDate(to) } : {}) } } : {};
 
-const blankTotals = () => ({ trips: 0, renters: 0, distance: 0, revenue: 0, serviceCosts: 0, fuelCosts: 0, fuelLiters: 0, lastServiceOdometer: null });
+const blankTotals = () => ({
+  trips: 0,
+  renters: 0,
+  distance: 0,
+  revenue: 0,
+  supplierCosts: 0,
+  serviceCosts: 0,
+  fuelCosts: 0,
+  fuelLiters: 0,
+  lastServiceOdometer: null
+});
 
 /**
  * Per-vehicle totals, keyed by vehicle id, over an optional YYYY-MM-DD range:
  * trips, distinct renters, distance and revenue of active and completed
- * rentals (by start date), service costs (by date) and fuel (by fill-up date).
- * Revenue is the contract value of those rentals, not what was collected.
+ * rentals (by start date), supplier hire costs on those rentals, service
+ * costs (by date) and fuel (by fill-up date). Revenue is the contract value
+ * of those rentals, not what was collected.
  */
 async function vehicleTotals(ctx, { from, to } = {}) {
   const { Rental, VehicleCost, FuelLog } = ctx.models;
@@ -22,6 +33,7 @@ async function vehicleTotals(ctx, { from, to } = {}) {
           trips: { $sum: 1 },
           renters: { $addToSet: '$renter' },
           revenue: { $sum: '$totalAmount' },
+          supplierCosts: { $sum: { $ifNull: ['$supplierRentalCost', 0] } },
           distance: {
             $sum: {
               $cond: [{ $and: [{ $gt: ['$endMileage', null] }, { $gt: ['$startMileage', null] }] }, { $subtract: ['$endMileage', '$startMileage'] }, 0]
@@ -46,7 +58,15 @@ async function vehicleTotals(ctx, { from, to } = {}) {
     if (!totals.has(key)) totals.set(key, blankTotals());
     return totals.get(key);
   };
-  for (const r of rentals) Object.assign(entry(r._id), { trips: r.trips, renters: r.renters.length, revenue: r.revenue, distance: r.distance });
+  for (const r of rentals) {
+    Object.assign(entry(r._id), {
+      trips: r.trips,
+      renters: r.renters.length,
+      revenue: r.revenue,
+      supplierCosts: r.supplierCosts,
+      distance: r.distance
+    });
+  }
   for (const c of costs) Object.assign(entry(c._id), { serviceCosts: c.serviceCosts, lastServiceOdometer: c.lastServiceOdometer ?? null });
   for (const f of fuel) Object.assign(entry(f._id), { fuelCosts: f.fuelCosts, fuelLiters: f.fuelLiters });
   return { of: (vehicleId) => totals.get(String(vehicleId)) ?? blankTotals() };
@@ -56,10 +76,15 @@ async function vehicleTotals(ctx, { from, to } = {}) {
  * Totals as the caller may see them. Cost figures need costs:read (and fuel
  * figures fuel:read) with the module on. `revenue`, `operatingCosts` and
  * `profit` are always included; the tenant API strips them unless the caller
- * has financials:view.
+ * has financials:view. When third-party vehicle tracking is on, also exposes
+ * `supplierCosts` and `grossProfit` (revenue − supplier hire).
  */
 function presentTotals(ctx, t) {
+  const thirdParty = Boolean(ctx.config.modules.vehicles.thirdPartyVehicles);
+  const supplierCosts = t.supplierCosts ?? 0;
   const operatingCosts = t.serviceCosts + t.fuelCosts;
+  const grossProfit = t.revenue - supplierCosts;
+  const profit = thirdParty ? grossProfit - operatingCosts : t.revenue - operatingCosts;
   return {
     trips: t.trips,
     renters: t.renters,
@@ -67,8 +92,9 @@ function presentTotals(ctx, t) {
     ...(can(ctx, 'costs:read') && moduleOn(ctx, 'costs') ? { serviceCosts: t.serviceCosts } : {}),
     ...(can(ctx, 'fuel:read') && moduleOn(ctx, 'fuelLogs') ? { fuelCosts: t.fuelCosts, fuelLiters: t.fuelLiters } : {}),
     revenue: t.revenue,
+    ...(thirdParty ? { supplierCosts, grossProfit } : {}),
     operatingCosts,
-    profit: t.revenue - operatingCosts
+    profit
   };
 }
 

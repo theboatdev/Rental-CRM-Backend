@@ -87,7 +87,10 @@ function createDashboard() {
       const perVehicle = vehicles.map((v) => ({ ...vehicleRef(v), status: v.status, mileage: v.mileage, ...presentTotals(ctx, totals.of(v._id)) }));
       const all = vehicles.map((v) => totals.of(v._id));
       const revenue = sum(all, (t) => t.revenue);
+      const supplierCosts = sum(all, (t) => t.supplierCosts);
       const operatingCosts = sum(all, (t) => t.serviceCosts + t.fuelCosts);
+      const thirdParty = Boolean(ctx.config.modules.vehicles.thirdPartyVehicles);
+      const profit = thirdParty ? revenue - supplierCosts - operatingCosts : revenue - operatingCosts;
       const showCosts = can(ctx, 'costs:read') && moduleOn(ctx, 'costs');
       const showFuel = can(ctx, 'fuel:read') && moduleOn(ctx, 'fuelLogs');
 
@@ -114,9 +117,10 @@ function createDashboard() {
           ...(showCosts ? { serviceCosts: sum(all, (t) => t.serviceCosts) } : {}),
           ...(showFuel ? { fuelCosts: sum(all, (t) => t.fuelCosts), fuelLiters: sum(all, (t) => t.fuelLiters) } : {}),
           revenue,
+          ...(thirdParty ? { supplierCosts, grossProfit: revenue - supplierCosts } : {}),
           operatingCosts,
-          profit: revenue - operatingCosts,
-          profitMargin: revenue ? (revenue - operatingCosts) / revenue : null
+          profit,
+          profitMargin: revenue ? profit / revenue : null
         },
         vehicles: perVehicle,
         alerts: alertsFor(ctx, snapshot, today)
@@ -158,8 +162,14 @@ function createDashboard() {
         const collected = sum(payments, (p) => signOf(p.type) * p.amount);
         const weekly = vehicles.map((v) => ({ plate: v.plateNumber, t: totals.of(v._id) }));
         const costs = sum(weekly, ({ t }) => t.serviceCosts + t.fuelCosts);
+        const thirdParty = Boolean(ctx.config.modules.vehicles.thirdPartyVehicles);
         const ranked = weekly
-          .map(({ plate, t }) => ({ plate, profit: t.revenue - t.serviceCosts - t.fuelCosts }))
+          .map(({ plate, t }) => ({
+            plate,
+            profit: thirdParty
+              ? t.revenue - (t.supplierCosts ?? 0) - t.serviceCosts - t.fuelCosts
+              : t.revenue - t.serviceCosts - t.fuelCosts
+          }))
           .sort((a, b) => b.profit - a.profit);
         lines.push(
           '',

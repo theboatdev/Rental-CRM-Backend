@@ -40,6 +40,7 @@ const presentVehicle = (v, ctx) => ({
   depositAmount: v.depositAmount,
   mileage: v.mileage,
   status: v.status,
+  ownership: v.ownership ?? 'OWNED',
   thumbnail: v.thumbnail ?? null,
   notes: v.notes ?? '',
   customFields: presentCustomFields(ctx, v.customFields, 'vehicles:read'),
@@ -138,6 +139,7 @@ function presentRental(r, ctx) {
     dailyRate: r.dailyRate,
     totalAmount: r.totalAmount,
     depositAmount: r.depositAmount,
+    ...(r.supplierRentalCost != null ? { supplierRentalCost: r.supplierRentalCost } : {}),
     paidAmount: r.paidAmount ?? 0,
     // What the renter still owes, counting the deposit until it's refunded.
     balance: owedOn(r),

@@ -64,6 +64,8 @@ const ReservationSchema = (ctx) =>
     endDate: DateStringSchema,
     dailyRate: z.number().positive().optional(),
     depositAmount: z.number().min(0).optional(),
+    // Payable to a third-party vehicle supplier; only kept when the feature is on and the vehicle is THIRD_PARTY.
+    supplierRentalCost: z.number().min(0).optional(),
     // An advance collected with the booking (needs payments:record).
     advance: z
       .strictObject({
@@ -82,7 +84,18 @@ const ReservationSchema = (ctx) =>
   });
 
 /** Assign (or reassign) a plate to a RESERVED booking that was held by make/model. */
-const AssignVehicleSchema = z.strictObject({ vehicleId: IdSchema });
+const AssignVehicleSchema = z.strictObject({
+  vehicleId: IdSchema,
+  // Same rules as booking: kept when third-party tracking is on and the assigned plate is THIRD_PARTY.
+  supplierRentalCost: z.number().min(0).optional()
+});
+
+/** Supplier hire cost to persist on a rental, or undefined when the feature/vehicle doesn't apply. */
+function supplierCostFor(ctx, vehicle, supplierRentalCost) {
+  if (!ctx.config.modules.vehicles.thirdPartyVehicles) return undefined;
+  if ((vehicle.ownership ?? 'OWNED') !== 'THIRD_PARTY') return undefined;
+  return supplierRentalCost ?? 0;
+}
 
 /** Notes and custom fields stay editable whatever the rental's status; dates and amounts don't change here. */
 const RentalUpdateSchema = (ctx) =>
@@ -302,6 +315,7 @@ async function bookWithin(ctx, session, data, { source = 'COUNTER' } = {}) {
 
   const dailyRate = data.dailyRate ?? vehicle.dailyRate;
   const depositAmount = data.depositAmount ?? vehicle.depositAmount;
+  const supplierRentalCost = supplierCostFor(ctx, vehicle, data.supplierRentalCost);
   const code = await nextCode(ctx, { prefix: ctx.config.rules.codePrefixes.booking, sequence: 'booking', year: today.slice(0, 4), session });
   const [created] = await ctx.models.Rental.create(
     [
@@ -319,6 +333,7 @@ async function bookWithin(ctx, session, data, { source = 'COUNTER' } = {}) {
         dailyRate,
         totalAmount: totalDays * dailyRate,
         depositAmount,
+        ...(supplierRentalCost != null ? { supplierRentalCost } : {}),
         paidAmount: 0,
         createdBy: ctx.actor,
         notes: data.notes ?? '',
@@ -506,7 +521,7 @@ function createRentals({ platformDb }) {
      * reserved). Required before check-in when the booking has no vehicle yet.
      */
     async assignVehicle(ctx, rentalId, input) {
-      const { vehicleId } = parse(AssignVehicleSchema, input);
+      const { vehicleId, supplierRentalCost: supplierCostInput } = parse(AssignVehicleSchema, input);
       let summary;
       await inTransaction(ctx, async (session) => {
         const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental', { session });
@@ -554,15 +569,18 @@ function createRentals({ platformDb }) {
         } else if (String(rental.vehicle) !== String(vehicle._id)) {
           await assertPlateLeavesClassCapacity(ctx, vehicle, { startDate, endDate, excludeId: rental._id, session });
         }
+        const supplierRentalCost = supplierCostFor(ctx, vehicle, supplierCostInput);
+        const $set = {
+          vehicle: vehicle._id,
+          requestedMake: vehicle.make,
+          requestedModel: vehicle.model
+        };
+        const $unset = {};
+        if (supplierRentalCost != null) $set.supplierRentalCost = supplierRentalCost;
+        else $unset.supplierRentalCost = 1;
         await ctx.models.Rental.updateOne(
           { _id: rental._id, status: 'RESERVED' },
-          {
-            $set: {
-              vehicle: vehicle._id,
-              requestedMake: vehicle.make,
-              requestedModel: vehicle.model
-            }
-          },
+          { $set, ...(Object.keys($unset).length ? { $unset } : {}) },
           { session }
         );
         summary = `Assigned ${vehicle.plateNumber} to ${rental.code}`;
@@ -694,7 +712,14 @@ function createRentals({ platformDb }) {
               else throw error;
             }
           }
-          return { vehicle: vehicleRef(vehicle), dailyRate: vehicle.dailyRate, depositAmount: vehicle.depositAmount, available: !reason, reason };
+          return {
+            vehicle: vehicleRef(vehicle),
+            ownership: vehicle.ownership ?? 'OWNED',
+            dailyRate: vehicle.dailyRate,
+            depositAmount: vehicle.depositAmount,
+            available: !reason,
+            reason
+          };
         })
       );
 

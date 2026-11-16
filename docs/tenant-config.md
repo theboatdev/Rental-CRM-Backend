@@ -49,7 +49,7 @@ Module settings:
 
 | Module | Settings |
 |---|---|
-| `vehicles` | `serviceIntervalKm`: drives service-due warnings |
+| `vehicles` | `serviceIntervalKm`: drives service-due warnings; `thirdPartyVehicles` (default off): mark vehicles as owned or supplier-sourced, capture a supplier rental cost on those bookings, and break profit into gross and net |
 | `rentals` | `inspectionPoints` (the checklist, with a photo per point), `requirePickupInspection`, `requireDropInspection` (every point checked; photos stay optional), `reservationMode` (`specificVehicle` = registration required at booking; `vehicleClass` = hold by make/model and assign a plate later; `both` = staff choose per booking). Default `specificVehicle`. Check-in always needs a concrete vehicle. |
 | `costs` | `requireBillUpload`: a cost can't be logged without its scanned bill |
 | `whatsappDigest` | `cron` (5 fields, in the tenant's timezone), `recipients` (E.164). Sending also needs the tenant's WhatsApp connection, set on its page in the admin dashboard |

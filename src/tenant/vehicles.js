@@ -1,5 +1,5 @@
 const { z } = require('zod');
-const { TRANSMISSIONS, FUEL_TYPES } = require('../models/tenant/enums');
+const { TRANSMISSIONS, FUEL_TYPES, VEHICLE_OWNERSHIPS } = require('../models/tenant/enums');
 const { conflict, notFound } = require('../platform/errors');
 const { refreshVehicleUsage, refreshStorageUsage } = require('../platform/usage');
 const { parse, findOr404, can, moduleOn, activeListKey, IdSchema, DateStringSchema } = require('./common');
@@ -20,6 +20,7 @@ const VEHICLE_FIELDS = {
   secondaryDailyRate: z.number().positive().nullable(),
   depositAmount: z.number().min(0),
   mileage: z.number().int().min(0),
+  ownership: z.enum(VEHICLE_OWNERSHIPS),
   notes: z.string().trim().max(1000)
 };
 
@@ -48,6 +49,8 @@ const VehicleInputSchema = (ctx) =>
     secondaryDailyRate: VEHICLE_FIELDS.secondaryDailyRate.optional(),
     depositAmount: VEHICLE_FIELDS.depositAmount.optional(),
     mileage: VEHICLE_FIELDS.mileage.default(0),
+    // Dropped by parseRecord unless modules.vehicles.thirdPartyVehicles is on.
+    ownership: VEHICLE_FIELDS.ownership.default('OWNED'),
     thumbnail: photoInput(ctx).optional(),
     notes: VEHICLE_FIELDS.notes.default(''),
     documents: z.array(VehicleDocumentInputSchema(ctx)).max(20).default([]),

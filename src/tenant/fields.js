@@ -26,10 +26,16 @@ const isBlank = (value) => value === undefined || value === null || (typeof valu
 /** The section's field settings. A config that no longer validates may lack them, so they fall back to the defaults. */
 const fieldsOf = (config, section) => config.fields?.[section] ?? DEFAULT_FIELDS[section];
 
-/** Whether a built-in field takes values: it's on, and a second-currency rate needs a second currency. */
+/**
+ * Whether a built-in field takes values: it's on, a second-currency rate needs
+ * a second currency, and ownership needs modules.vehicles.thirdPartyVehicles.
+ */
 function builtInOn(config, section, field) {
   const settings = fieldsOf(config, section).builtIn[field.key] ?? DEFAULT_FIELDS[section].builtIn[field.key];
-  return settings.active && !(field.secondaryCurrencyOnly && !config.locale.secondaryCurrency) ? settings : null;
+  if (!settings.active) return null;
+  if (field.secondaryCurrencyOnly && !config.locale.secondaryCurrency) return null;
+  if (field.thirdPartyVehiclesOnly && !config.modules.vehicles.thirdPartyVehicles) return null;
+  return settings;
 }
 
 /**

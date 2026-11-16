@@ -8,6 +8,7 @@ const FINANCIAL_FIELDS = new Set([
   'revenue',
   'totalRevenue',
   'operatingCosts',
+  'supplierCosts',
   'profit',
   'grossProfit',
   'netProfit',
