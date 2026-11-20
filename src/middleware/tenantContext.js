@@ -1,7 +1,7 @@
 const { MODULE_KEYS } = require('../platform/config/modules');
 const { effectivePermissions, isPermission } = require('../platform/rbac/permissions');
 const { forbidden, notFound } = require('../platform/errors');
-const { stripFinancialFields } = require('../platform/rbac/financialFields');
+const { stripFinancialFieldsForCaller } = require('../platform/rbac/financialFields');
 
 /** Runs an async middleware body and hands a rejection to the error handler. */
 const asyncMiddleware = (fn) => (req, res, next) =>
@@ -118,13 +118,17 @@ const requirePermission = (permission) => requireAnyPermission(permission);
 /**
  * Drops profit and margin fields (FINANCIAL_FIELDS) from every response
  * unless the caller has financials:view, so they can't be read from the
- * network tab. Handlers return those fields under the listed names and
- * don't filter them themselves.
+ * network tab. When `modules.rentals.hideBookingPricingWithoutFinancials`
+ * is on, also drops booking rate/total/deposit/supplier-cost and
+ * outstanding balance fields. Handlers return those fields under the
+ * listed names and don't filter them themselves. Payment ledger amounts
+ * stay visible.
  */
 function hideFinancialFields(req, res, next) {
   if (req.permissions.has('financials:view')) return next();
+  const hideBookingPricing = Boolean(req.config?.modules?.rentals?.hideBookingPricingWithoutFinancials);
   const json = res.json.bind(res);
-  res.json = (body) => json(stripFinancialFields(body));
+  res.json = (body) => json(stripFinancialFieldsForCaller(body, { hideBookingPricing }));
   next();
 }
 

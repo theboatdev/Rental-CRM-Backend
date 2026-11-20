@@ -6,7 +6,7 @@ const { handle } = require('../src/routes/handle');
 const { errorHandler } = require('../src/middleware/errorHandler');
 const { requirePermission } = require('../src/middleware/tenantContext');
 const { createPlatformService } = require('../src/platform/service');
-const { stripFinancialFields } = require('../src/platform/rbac/financialFields');
+const { stripFinancialFields, stripFinancialFieldsForCaller } = require('../src/platform/rbac/financialFields');
 const { SYSTEM_ROLES } = require('../src/platform/rbac/permissions');
 const { forbidden, unauthenticated } = require('../src/platform/errors');
 const { startTestDb } = require('./helpers/db');
@@ -323,6 +323,32 @@ describe('field-level filtering', () => {
   it('drops profit and margin fields at any depth, leaving other values alone', () => {
     const at = new Date(0);
     assert.deepEqual(stripFinancialFields({ amount: 1, profit: 2, at, rows: [{ margin: 3, revenue: 4, ok: 5 }] }), { amount: 1, at, rows: [{ ok: 5 }] });
+  });
+
+  it('optionally strips booking prices while leaving payment amounts', () => {
+    const sample = {
+      dailyRate: 12000,
+      totalAmount: 36000,
+      depositAmount: 25000,
+      supplierRentalCost: 15000,
+      paidAmount: 5000,
+      balance: 56000,
+      amount: 5000,
+      profit: 10000
+    };
+    assert.deepEqual(stripFinancialFieldsForCaller(sample), {
+      dailyRate: 12000,
+      totalAmount: 36000,
+      depositAmount: 25000,
+      supplierRentalCost: 15000,
+      paidAmount: 5000,
+      balance: 56000,
+      amount: 5000
+    });
+    assert.deepEqual(stripFinancialFieldsForCaller(sample, { hideBookingPricing: true }), {
+      paidAmount: 5000,
+      amount: 5000
+    });
   });
 
   it('hides them from members without financials:view', async () => {

@@ -101,8 +101,9 @@ Team and role changes are recorded in the tenant's `audit_logs`, readable with `
   - Nobody can change or remove a member, or edit a role, whose permissions go beyond their own.
 - **Tenant app (UX only).** `GET /api/v1/me` returns `{ user, tenant, role, permissions, configVersion }`; the config itself comes from `GET /api/v1/config`. The app's `useWorkspace().can(permission)` hides tabs, buttons and forms the role can't use. Hiding UI is never the protection.
 - **Field-level rule.** Responses drop profit and margin fields unless the caller has `financials:view`, so a Staff user can't read them from the network tab.
-  - `hideFinancialFields` strips them from every tenant response, at any depth. The field names are listed in `src/platform/rbac/financialFields.js`: `revenue`, `totalRevenue`, `operatingCosts`, `profit`, `grossProfit`, `netProfit`, `margin`, `profitMargin`, `roi`.
-  - Handlers that return such figures must use those names. Raw amounts a role works with, like a rental total or a cost entry, aren't filtered.
+  - `hideFinancialFields` strips them from every tenant response, at any depth. The field names are listed in `src/platform/rbac/financialFields.js`: `revenue`, `totalRevenue`, `operatingCosts`, `supplierCosts`, `profit`, `grossProfit`, `netProfit`, `margin`, `profitMargin`, `roi`.
+  - Handlers that return such figures must use those names. Raw amounts a role works with, like a rental total or a cost entry, aren't filtered by default.
+  - When `modules.rentals.hideBookingPricingWithoutFinancials` is on, booking price fields are stripped too for callers without `financials:view`: `dailyRate`, `secondaryDailyRate`, `totalAmount`, `depositAmount`, `supplierRentalCost`, `balance`. Payment ledger amounts (`amount`, `paidAmount`) stay visible so staff can still collect money.
 
 ## Super admins are separate
 

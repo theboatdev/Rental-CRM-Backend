@@ -50,7 +50,7 @@ Module settings:
 | Module | Settings |
 |---|---|
 | `vehicles` | `serviceIntervalKm`: drives service-due warnings; `thirdPartyVehicles` (default off): mark vehicles as owned or supplier-sourced, capture a supplier rental cost on those bookings, and break profit into gross and net |
-| `rentals` | `inspectionPoints` (the checklist, with a photo per point), `requirePickupInspection`, `requireDropInspection` (every point checked; photos stay optional), `reservationMode` (`specificVehicle` = registration required at booking; `vehicleClass` = hold by make/model and assign a plate later; `both` = staff choose per booking). Default `specificVehicle`. Check-in always needs a concrete vehicle. |
+| `rentals` | `inspectionPoints` (the checklist, with a photo per point), `requirePickupInspection`, `requireDropInspection` (every point checked; photos stay optional), `reservationMode` (`specificVehicle` = registration required at booking; `vehicleClass` = hold by make/model and assign a plate later; `both` = staff choose per booking). Default `specificVehicle`. Check-in always needs a concrete vehicle. `hideBookingPricingWithoutFinancials` (default off): roles without `financials:view` no longer see booking prices (rate, total, deposit, supplier cost, outstanding balance) or vehicle rates; payment ledger amounts stay visible. |
 | `costs` | `requireBillUpload`: a cost can't be logged without its scanned bill |
 | `whatsappDigest` | `cron` (5 fields, in the tenant's timezone), `recipients` (E.164). Sending also needs the tenant's WhatsApp connection, set on its page in the admin dashboard |
 | `guestPortal` | `residentTypes` (who can self-register), `requireDocumentUpload` (online bookings need a scan of every document, and the ones the renter type requires) |

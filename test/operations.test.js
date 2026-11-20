@@ -626,6 +626,46 @@ describe('dashboard and WhatsApp digest', () => {
     assert.ok((await staff('GET', '/vehicles')).body.every((v) => !('profit' in v.stats) && 'trips' in v.stats));
   });
 
+  it('optionally hides booking prices from staff while leaving payment amounts', async () => {
+    const vehicle = await addVehicle({ dailyRate: 15000, depositAmount: 30000 });
+    const renter = await addRenter();
+    const booked = await staff('POST', '/rentals', {
+      vehicleId: vehicle.id,
+      renterId: renter.id,
+      startDate: TODAY,
+      endDate: addDays(TODAY, 3),
+      dailyRate: 15000,
+      depositAmount: 30000
+    });
+    assert.equal(booked.status, 201, JSON.stringify(booked.body));
+    assert.equal(booked.body.totalAmount, 45000);
+
+    await publish(tenantA, (config) => {
+      config.modules.rentals.hideBookingPricingWithoutFinancials = true;
+    });
+    try {
+      const staffVehicle = (await staff('GET', `/vehicles/${vehicle.id}`)).body;
+      assert.equal('dailyRate' in staffVehicle, false);
+      assert.equal('depositAmount' in staffVehicle, false);
+      assert.equal(staffVehicle.plateNumber, vehicle.plateNumber);
+
+      const staffRental = (await staff('GET', `/rentals/${booked.body.id}`)).body;
+      assert.equal('dailyRate' in staffRental, false);
+      assert.equal('totalAmount' in staffRental, false);
+      assert.equal('depositAmount' in staffRental, false);
+      assert.equal('balance' in staffRental, false);
+      assert.ok('paidAmount' in staffRental);
+
+      const ownerRental = (await owner('GET', `/rentals/${booked.body.id}`)).body;
+      assert.equal(ownerRental.dailyRate, 15000);
+      assert.equal(ownerRental.totalAmount, 45000);
+    } finally {
+      await publish(tenantA, (config) => {
+        config.modules.rentals.hideBookingPricingWithoutFinancials = false;
+      });
+    }
+  });
+
   it('builds the digest text, with money lines only for financials:view', async () => {
     const full = (await manager('GET', '/whatsapp/digest')).body;
     assert.equal(full.includesFinancials, true);

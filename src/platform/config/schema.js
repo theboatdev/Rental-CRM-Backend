@@ -1,7 +1,7 @@
 const { z } = require('zod');
 const { MODULES, MODULE_KEYS, TAB_MODULE_KEYS } = require('./modules');
 const { formatPath } = require('./path');
-const { FINANCIAL_FIELDS } = require('../rbac/financialFields');
+const { FINANCIAL_FIELDS, BOOKING_PRICING_FIELDS } = require('../rbac/financialFields');
 const { BUILT_IN_FIELDS, FIELD_SECTIONS } = require('./fields');
 const { RETURN_RECEIPT_DEFAULTS, RETURN_RECEIPT_PLACEHOLDERS, unknownPlaceholders } = require('./documents');
 
@@ -122,7 +122,14 @@ const ModulesSchema = z.strictObject({
      * - vehicleClass: reserve by make + model; assign a plate later
      * - both: staff choose per booking
      */
-    reservationMode: z.enum(['specificVehicle', 'vehicleClass', 'both']).default('specificVehicle')
+    reservationMode: z.enum(['specificVehicle', 'vehicleClass', 'both']).default('specificVehicle'),
+    /**
+     * When on: roles without financials:view no longer see booking prices
+     * (daily rate, total, deposit, supplier rental cost, outstanding balance)
+     * or vehicle rates. Payment ledger amounts stay visible so staff can still
+     * collect money. Default off.
+     */
+    hideBookingPricingWithoutFinancials: z.boolean().default(false)
   }),
   calendar: z.strictObject({ ...enabled }),
   payments: z.strictObject({ ...enabled }),
@@ -211,8 +218,8 @@ const FILE_FIELD_ACCEPTS = ['images', 'documents'];
 const customFieldKey = z
   .string()
   .regex(CUSTOM_FIELD_KEY_PATTERN, { error: 'Keys are camelCase letters and digits, e.g. insuranceExpiry' })
-  // Responses drop these names for roles without financials:view.
-  .refine((key) => !FINANCIAL_FIELDS.has(key), { error: 'This key is reserved' });
+  // Responses drop these names for roles without financials:view (and booking prices when that setting is on).
+  .refine((key) => !FINANCIAL_FIELDS.has(key) && !BOOKING_PRICING_FIELDS.has(key), { error: 'This key is reserved' });
 
 const fieldLabel = z.string().trim().min(1).max(60);
 const fieldHelpText = z.string().trim().max(200).default('');
