@@ -7,7 +7,11 @@ const { z } = require('zod');
  */
 const PERMISSIONS = {
   'dashboard:view': { group: 'Dashboard', label: 'View the operations dashboard', module: 'dashboard' },
-  'financials:view': { group: 'Dashboard', label: 'View revenue, operating costs, profit and margins', module: null },
+  'financials:view': {
+    group: 'Dashboard',
+    label: 'View revenue, operating costs, profit and margins (and booking prices when the tenant hides them from other roles)',
+    module: null
+  },
 
   'vehicles:read': { group: 'Fleet', label: 'View vehicles', module: 'vehicles' },
   'vehicles:create': { group: 'Fleet', label: 'Add vehicles', module: 'vehicles' },

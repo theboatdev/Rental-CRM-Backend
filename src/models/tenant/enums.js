@@ -7,6 +7,8 @@
 const VEHICLE_STATUSES = ['AVAILABLE', 'RENTED', 'MAINTENANCE'];
 const TRANSMISSIONS = ['AUTOMATIC', 'MANUAL'];
 const FUEL_TYPES = ['PETROL', 'DIESEL', 'HYBRID', 'ELECTRIC'];
+/** Owned fleet vs supplier-sourced. Only used when modules.vehicles.thirdPartyVehicles is on. */
+const VEHICLE_OWNERSHIPS = ['OWNED', 'THIRD_PARTY'];
 
 /** Overdue isn't stored: it's an ACTIVE rental past its end date. */
 const RENTAL_STATUSES = ['RESERVED', 'ACTIVE', 'COMPLETED', 'CANCELLED'];
@@ -23,6 +25,7 @@ module.exports = {
   VEHICLE_STATUSES,
   TRANSMISSIONS,
   FUEL_TYPES,
+  VEHICLE_OWNERSHIPS,
   RENTAL_STATUSES,
   SOURCES,
   PAYMENT_TYPES,

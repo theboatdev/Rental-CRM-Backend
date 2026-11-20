@@ -18,6 +18,15 @@ const idOf = (value) => (value?._id ? String(value._id) : value ? String(value) 
 const vehicleRef = (v) => (v?._id ? { id: String(v._id), plateNumber: v.plateNumber, make: v.make, model: v.model } : null);
 const renterRef = (r) => (r?._id ? { id: String(r._id), profileId: r.profileId, fullName: r.fullName, phone: r.phone } : null);
 
+/** A vehicle compliance document as the API returns it. `file.url` is a short-lived link. */
+const presentVehicleDocument = (d, ctx) => ({
+  id: String(d._id),
+  type: d.type,
+  expiresAt: d.expiresAt ? dateString(d.expiresAt) : null,
+  file: fileView(ctx, d.file, 'vehicles:read'),
+  uploadedAt: iso(d.uploadedAt)
+});
+
 const presentVehicle = (v, ctx) => ({
   id: String(v._id),
   plateNumber: v.plateNumber,
@@ -31,9 +40,11 @@ const presentVehicle = (v, ctx) => ({
   depositAmount: v.depositAmount,
   mileage: v.mileage,
   status: v.status,
+  ownership: v.ownership ?? 'OWNED',
   thumbnail: v.thumbnail ?? null,
   notes: v.notes ?? '',
   customFields: presentCustomFields(ctx, v.customFields, 'vehicles:read'),
+  documents: (v.documents ?? []).map((d) => presentVehicleDocument(d, ctx)),
   createdAt: iso(v.createdAt),
   updatedAt: iso(v.updatedAt)
 });
@@ -108,6 +119,7 @@ const owedOn = (rental) => rental.totalAmount + (rental.depositRefunded ? 0 : re
 function presentRental(r, ctx) {
   const today = todayIn(ctx.timezone);
   const endDate = dateString(r.endDate);
+  const vehicle = r.vehicle ? vehicleRef(r.vehicle) ?? { id: idOf(r.vehicle) } : null;
   return {
     id: String(r._id),
     code: r.code,
@@ -115,7 +127,10 @@ function presentRental(r, ctx) {
     status: r.status,
     overdue: r.status === 'ACTIVE' && endDate < today,
     source: r.source,
-    vehicle: vehicleRef(r.vehicle) ?? { id: idOf(r.vehicle) },
+    vehicle,
+    requestedMake: r.requestedMake ?? vehicle?.make ?? null,
+    requestedModel: r.requestedModel ?? vehicle?.model ?? null,
+    needsVehicleAssignment: r.status === 'RESERVED' && !r.vehicle,
     renter: renterRef(r.renter) ?? { id: idOf(r.renter) },
     startDate: dateString(r.startDate),
     endDate,
@@ -124,6 +139,7 @@ function presentRental(r, ctx) {
     dailyRate: r.dailyRate,
     totalAmount: r.totalAmount,
     depositAmount: r.depositAmount,
+    ...(r.supplierRentalCost != null ? { supplierRentalCost: r.supplierRentalCost } : {}),
     paidAmount: r.paidAmount ?? 0,
     // What the renter still owes, counting the deposit until it's refunded.
     balance: owedOn(r),
@@ -197,6 +213,7 @@ module.exports = {
   vehicleRef,
   renterRef,
   presentVehicle,
+  presentVehicleDocument,
   presentRenter,
   presentDocument,
   presentRental,

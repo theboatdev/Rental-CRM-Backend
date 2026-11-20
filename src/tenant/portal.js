@@ -6,7 +6,7 @@ const { iso, parse, inTransaction, todayIn, dateString, DateStringSchema, IdSche
 const { builtInRules, fieldsOf } = require('./fields');
 const { fileInput, signFileUpload, assertStorageLeft } = require('./files');
 const { insertRenter, RENTER_FIELDS } = require('./renters');
-const { bookWithin, bookingDays, findOverlap } = require('./rentals');
+const { bookWithin, bookingDays, findOverlap, classAvailability } = require('./rentals');
 const { recordAudit } = require('./audit');
 
 /**
@@ -159,7 +159,11 @@ function createPortal({ platformDb }) {
       const vehicles = await ctx.models.Vehicle.find({ status: { $ne: 'MAINTENANCE' } }).sort({ dailyRate: 1, make: 1, model: 1 }).lean();
       const free = [];
       for (const vehicle of vehicles) {
-        if (!(await findOverlap(ctx, { vehicleId: vehicle._id, ...dates }))) free.push(vehicle);
+        if (await findOverlap(ctx, { vehicleId: vehicle._id, ...dates })) continue;
+        // Leave enough free plates for any unassigned make/model holds.
+        const capacity = await classAvailability(ctx, { make: vehicle.make, model: vehicle.model, ...dates });
+        if (capacity.freePlates - 1 < capacity.classHolds) continue;
+        free.push(vehicle);
       }
       return { ...dates, totalDays, vehicles: free.map((v) => presentGuestVehicle(v, totalDays)) };
     },

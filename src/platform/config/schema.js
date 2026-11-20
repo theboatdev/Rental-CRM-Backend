@@ -1,7 +1,7 @@
 const { z } = require('zod');
 const { MODULES, MODULE_KEYS, TAB_MODULE_KEYS } = require('./modules');
 const { formatPath } = require('./path');
-const { FINANCIAL_FIELDS } = require('../rbac/financialFields');
+const { FINANCIAL_FIELDS, BOOKING_PRICING_FIELDS } = require('../rbac/financialFields');
 const { BUILT_IN_FIELDS, FIELD_SECTIONS } = require('./fields');
 const { RETURN_RECEIPT_DEFAULTS, RETURN_RECEIPT_PLACEHOLDERS, unknownPlaceholders } = require('./documents');
 
@@ -102,14 +102,34 @@ const ModulesSchema = z.strictObject({
   vehicles: z.strictObject({
     ...enabled,
     /** Distance between routine services; drives "service due" warnings. */
-    serviceIntervalKm: z.number().int().positive().default(5000)
+    serviceIntervalKm: z.number().int().positive().default(5000),
+    /**
+     * When on: vehicles can be marked OWNED or THIRD_PARTY, bookings for
+     * third-party vehicles capture a supplier rental cost, and profit breaks
+     * into gross (revenue − supplier) and net (gross − operating costs).
+     */
+    thirdPartyVehicles: z.boolean().default(false)
   }),
   renters: z.strictObject({ ...enabled }),
   rentals: z.strictObject({
     ...enabled,
     inspectionPoints: z.array(z.string().trim().min(1).max(60)).min(1).max(20),
     requirePickupInspection: z.boolean().default(true),
-    requireDropInspection: z.boolean().default(true)
+    requireDropInspection: z.boolean().default(true),
+    /**
+     * How counter reservations pick a vehicle:
+     * - specificVehicle: must pick a plate (current default)
+     * - vehicleClass: reserve by make + model; assign a plate later
+     * - both: staff choose per booking
+     */
+    reservationMode: z.enum(['specificVehicle', 'vehicleClass', 'both']).default('specificVehicle'),
+    /**
+     * When on: roles without financials:view no longer see booking prices
+     * (daily rate, total, deposit, supplier rental cost, outstanding balance)
+     * or vehicle rates. Payment ledger amounts stay visible so staff can still
+     * collect money. Default off.
+     */
+    hideBookingPricingWithoutFinancials: z.boolean().default(false)
   }),
   calendar: z.strictObject({ ...enabled }),
   payments: z.strictObject({ ...enabled }),
@@ -144,6 +164,12 @@ const DocumentTypeSchema = ListItemSchema.extend({
   requiredFor: z.array(z.enum(RESIDENT_TYPES)).default([])
 });
 
+/** One kind of compliance document a vehicle must carry (e.g. insurance, revenue licence). */
+const VehicleDocumentTypeSchema = ListItemSchema.extend({
+  /** Days before expiry to show a document_expiry alert on the dashboard (default 7). */
+  alertDaysBefore: z.number().int().min(1).max(365).default(7)
+});
+
 function uniqueKeys(items, ctx) {
   const seen = new Set();
   items.forEach((entry, index) => {
@@ -159,7 +185,9 @@ const keyedList = (item) => z.array(item).min(1).superRefine(uniqueKeys);
 const ListsSchema = z.strictObject({
   documentTypes: keyedList(DocumentTypeSchema),
   paymentMethods: keyedList(ListItemSchema),
-  costCategories: keyedList(ListItemSchema)
+  costCategories: keyedList(ListItemSchema),
+  /** Vehicle compliance document types (e.g. insurance, revenue licence). May be empty. */
+  vehicleDocumentTypes: z.array(VehicleDocumentTypeSchema).superRefine(uniqueKeys).default([])
 });
 
 const RulesSchema = z.strictObject({
@@ -190,8 +218,8 @@ const FILE_FIELD_ACCEPTS = ['images', 'documents'];
 const customFieldKey = z
   .string()
   .regex(CUSTOM_FIELD_KEY_PATTERN, { error: 'Keys are camelCase letters and digits, e.g. insuranceExpiry' })
-  // Responses drop these names for roles without financials:view.
-  .refine((key) => !FINANCIAL_FIELDS.has(key), { error: 'This key is reserved' });
+  // Responses drop these names for roles without financials:view (and booking prices when that setting is on).
+  .refine((key) => !FINANCIAL_FIELDS.has(key) && !BOOKING_PRICING_FIELDS.has(key), { error: 'This key is reserved' });
 
 const fieldLabel = z.string().trim().min(1).max(60);
 const fieldHelpText = z.string().trim().max(200).default('');

@@ -33,7 +33,8 @@
         "Dashboard & Odometer"
       ],
       "requirePickupInspection": true,
-      "requireDropInspection": true
+      "requireDropInspection": true,
+      "reservationMode": "specificVehicle"
     },
     "calendar": { "enabled": true },
     "payments": { "enabled": true },
@@ -78,6 +79,10 @@
       { "key": "REVENUE_LICENSE", "label": "Revenue License & Fitness Test", "active": true },
       { "key": "ACCIDENT_REPAIR", "label": "Accident Repair / Bodywork", "active": true },
       { "key": "OTHER", "label": "Other", "active": true }
+    ],
+    "vehicleDocumentTypes": [
+      { "key": "INSURANCE", "label": "Comprehensive Insurance", "active": true, "alertDaysBefore": 7 },
+      { "key": "REVENUE_LICENSE", "label": "Revenue Licence & Fitness Test", "active": true, "alertDaysBefore": 7 }
     ]
   },
   "rules": {

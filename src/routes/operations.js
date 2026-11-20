@@ -41,6 +41,11 @@ function registerOperationRoutes(router, { platformDb, digests, loadLogo }) {
   router.patch('/vehicles/:id', guard('vehicles', 'vehicles:update'), handle((req) => vehicles.updateVehicle(contextOf(req), req.params.id, req.body)));
   router.delete('/vehicles/:id', guard('vehicles', 'vehicles:delete'), handle((req) => vehicles.deleteVehicle(contextOf(req), req.params.id)));
 
+  // Vehicle compliance documents (insurance, revenue licence, etc.).
+  router.post('/vehicles/:id/documents', guard('vehicles', 'vehicles:update'), handle((req) => vehicles.addVehicleDocument(contextOf(req), req.params.id, req.body), 201));
+  router.put('/vehicles/:id/documents/:documentId/file', guard('vehicles', 'vehicles:update'), handle((req) => vehicles.attachVehicleDocumentFile(contextOf(req), req.params.id, req.params.documentId, req.body)));
+  router.patch('/vehicles/:id/documents/:documentId', guard('vehicles', 'vehicles:update'), handle((req) => vehicles.updateVehicleDocument(contextOf(req), req.params.id, req.params.documentId, req.body)));
+
   router.get('/renters', guard('renters', 'renters:read'), handle((req) => renters.listRenters(contextOf(req))));
   router.get('/renters/:id', guard('renters', 'renters:read'), handle((req) => renters.getRenter(contextOf(req), req.params.id)));
   router.post('/renters', guard('renters', 'renters:create'), handle((req) => renters.createRenter(contextOf(req), req.body), 201));
@@ -61,6 +66,7 @@ function registerOperationRoutes(router, { platformDb, digests, loadLogo }) {
   router.get('/rentals/:id', guard('rentals', 'rentals:read'), handle((req) => rentals.getRental(contextOf(req), req.params.id)));
   router.post('/rentals', guard('rentals', 'rentals:create'), handle((req) => rentals.reserve(contextOf(req), req.body), 201));
   router.patch('/rentals/:id', guard('rentals', 'rentals:create'), handle((req) => rentals.updateRental(contextOf(req), req.params.id, req.body)));
+  router.post('/rentals/:id/assign-vehicle', guard('rentals', 'rentals:create'), handle((req) => rentals.assignVehicle(contextOf(req), req.params.id, req.body)));
   router.post('/rentals/:id/check-in', guard('rentals', 'rentals:checkin'), handle((req) => rentals.checkIn(contextOf(req), req.params.id, req.body)));
   router.post('/rentals/:id/return', guard('rentals', 'rentals:return'), handle((req) => rentals.returnRental(contextOf(req), req.params.id, req.body)));
   router.post('/rentals/:id/cancel', guard('rentals', 'rentals:cancel'), handle((req) => rentals.cancel(contextOf(req), req.params.id)));
