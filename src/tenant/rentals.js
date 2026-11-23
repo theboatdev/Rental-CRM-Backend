@@ -12,6 +12,7 @@ const {
   dateString,
   addDays,
   daysBetween,
+  rentalDays,
   DateStringSchema,
   IdSchema,
   activeListKey,
@@ -109,21 +110,25 @@ const reservationModeOf = (ctx) => ctx.config.modules.rentals.reservationMode ??
 
 const classKey = (make, model) => `${make.trim().toLowerCase()}\0${model.trim().toLowerCase()}`;
 
-/** The first day a rental no longer holds its vehicle. An active rental holds it until it's returned, even past its end date. */
+/**
+ * The first day a rental no longer holds its vehicle. Return day is inclusive
+ * (charged and blocked), so the vehicle frees the day after endDate. An active
+ * rental holds it until it's returned, even past its end date.
+ */
 function heldUntil(rental, today) {
-  const end = dateString(rental.endDate);
-  return rental.status === 'ACTIVE' && end <= today ? addDays(today, 1) : end;
+  const freeFrom = addDays(dateString(rental.endDate), 1);
+  return rental.status === 'ACTIVE' && freeFrom <= today ? addDays(today, 1) : freeFrom;
 }
 
-const describeBooking = (rental, today) => `${rental.code} (${dateString(rental.startDate)} to ${heldUntil(rental, today)})`;
+const describeBooking = (rental, today) => `${rental.code} (${dateString(rental.startDate)} to ${dateString(rental.endDate)})`;
 
-/** The first reservation or active rental of the vehicle that overlaps [startDate, endDate). */
+/** The first reservation or active rental of the vehicle that overlaps [startDate, endDate]. */
 async function findOverlap(ctx, { vehicleId, startDate, endDate, excludeId, session }) {
   const today = todayIn(ctx.timezone);
   const candidates = await ctx.models.Rental.find({
     vehicle: vehicleId,
     status: { $in: ['RESERVED', 'ACTIVE'] },
-    startDate: { $lt: toDate(endDate) },
+    startDate: { $lte: toDate(endDate) },
     ...(excludeId ? { _id: { $ne: excludeId } } : {})
   })
     .session(session ?? null)
@@ -132,7 +137,7 @@ async function findOverlap(ctx, { vehicleId, startDate, endDate, excludeId, sess
 }
 
 /**
- * Unassigned make/model holds that overlap [startDate, endDate).
+ * Unassigned make/model holds that overlap [startDate, endDate].
  * These consume pool capacity without locking a plate yet.
  */
 async function findClassHolds(ctx, { make, model, startDate, endDate, excludeId, session }) {
@@ -142,7 +147,7 @@ async function findClassHolds(ctx, { make, model, startDate, endDate, excludeId,
     status: 'RESERVED',
     requestedMake: new RegExp(`^${escapeRegex(make.trim())}$`, 'i'),
     requestedModel: new RegExp(`^${escapeRegex(model.trim())}$`, 'i'),
-    startDate: { $lt: toDate(endDate) },
+    startDate: { $lte: toDate(endDate) },
     ...(excludeId ? { _id: { $ne: excludeId } } : {})
   })
     .session(session ?? null)
@@ -250,9 +255,11 @@ function fullPaymentBy(ctx, rental, { path } = {}) {
 
 /** A booking's length in days, after checking its dates against the tenant's rules. */
 function bookingDays(ctx, { startDate, endDate }) {
-  const totalDays = daysBetween(startDate, endDate);
+  if (daysBetween(startDate, endDate) < 0) {
+    throw invalid('The return date must be on or after the pickup date', [{ path: 'endDate', message: 'Before the pickup date' }]);
+  }
+  const totalDays = rentalDays(startDate, endDate);
   const minDays = Math.max(1, ctx.config.rules.minRentalDays);
-  if (totalDays < 1) throw invalid('The return date must be after the pickup date', [{ path: 'endDate', message: 'Before the pickup date' }]);
   if (totalDays < minDays) throw invalid(`Rentals are at least ${minDays} days`, [{ path: 'endDate', message: `At least ${minDays} days` }]);
   if (startDate < todayIn(ctx.timezone)) throw invalid('The pickup date is in the past', [{ path: 'startDate', message: 'In the past' }]);
   return totalDays;
@@ -689,12 +696,14 @@ function createRentals({ platformDb }) {
     },
 
     /**
-     * Per-vehicle availability for [startDate, endDate), plus make/model class
+     * Per-vehicle availability for [startDate, endDate], plus make/model class
      * availability when the tenant allows class holds.
      */
     async availability(ctx, query) {
       const { startDate, endDate, excludeRentalId } = parse(AvailabilityQuerySchema, query);
-      if (daysBetween(startDate, endDate) < 1) throw invalid('The return date must be after the pickup date', [{ path: 'endDate', message: 'Before the pickup date' }]);
+      if (daysBetween(startDate, endDate) < 0) {
+        throw invalid('The return date must be on or after the pickup date', [{ path: 'endDate', message: 'Before the pickup date' }]);
+      }
       const today = todayIn(ctx.timezone);
       const mode = reservationModeOf(ctx);
       const vehicles = await ctx.models.Vehicle.find().sort({ plateNumber: 1 }).lean();
