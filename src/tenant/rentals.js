@@ -12,6 +12,7 @@ const {
   dateString,
   addDays,
   daysBetween,
+  rentalDays,
   DateStringSchema,
   IdSchema,
   activeListKey,
@@ -62,7 +63,7 @@ const ReservationSchema = (ctx) =>
     renterId: IdSchema,
     startDate: DateStringSchema,
     endDate: DateStringSchema,
-    dailyRate: z.number().positive().optional(),
+    dailyRate: ctx.config.modules.vehicles.rateOnVehicle !== false ? z.number().positive().optional() : z.number().positive(),
     depositAmount: z.number().min(0).optional(),
     // Payable to a third-party vehicle supplier; only kept when the feature is on and the vehicle is THIRD_PARTY.
     supplierRentalCost: z.number().min(0).optional(),
@@ -97,9 +98,25 @@ function supplierCostFor(ctx, vehicle, supplierRentalCost) {
   return supplierRentalCost ?? 0;
 }
 
-/** Notes and custom fields stay editable whatever the rental's status; dates and amounts don't change here. */
+/**
+ * Fields a PATCH may send. Status decides which ones apply:
+ * RESERVED → all; ACTIVE → dailyRate, notes, customFields; COMPLETED/CANCELLED → none.
+ */
 const RentalUpdateSchema = (ctx) =>
-  z.strictObject({ notes: z.string().trim().max(1000).optional(), customFields: customFieldsInput(ctx, 'rentals', { update: true }) });
+  z.strictObject({
+    startDate: DateStringSchema.optional(),
+    endDate: DateStringSchema.optional(),
+    renterId: IdSchema.optional(),
+    dailyRate: z.number().positive().optional(),
+    // Null clears an override so the rental charges totalDays again.
+    billableDays: z.number().int().min(1).nullable().optional(),
+    depositAmount: z.number().min(0).optional(),
+    notes: z.string().trim().max(1000).optional(),
+    customFields: customFieldsInput(ctx, 'rentals', { update: true })
+  });
+
+const RESERVED_EDITABLE = new Set(['startDate', 'endDate', 'renterId', 'dailyRate', 'billableDays', 'depositAmount', 'notes', 'customFields']);
+const ACTIVE_EDITABLE = new Set(['dailyRate', 'billableDays', 'notes', 'customFields']);
 
 const AvailabilityQuerySchema = z.strictObject({ startDate: DateStringSchema, endDate: DateStringSchema, excludeRentalId: IdSchema.optional() });
 
@@ -109,21 +126,25 @@ const reservationModeOf = (ctx) => ctx.config.modules.rentals.reservationMode ??
 
 const classKey = (make, model) => `${make.trim().toLowerCase()}\0${model.trim().toLowerCase()}`;
 
-/** The first day a rental no longer holds its vehicle. An active rental holds it until it's returned, even past its end date. */
+/**
+ * The first day a rental no longer holds its vehicle. Return day is inclusive
+ * (charged and blocked), so the vehicle frees the day after endDate. An active
+ * rental holds it until it's returned, even past its end date.
+ */
 function heldUntil(rental, today) {
-  const end = dateString(rental.endDate);
-  return rental.status === 'ACTIVE' && end <= today ? addDays(today, 1) : end;
+  const freeFrom = addDays(dateString(rental.endDate), 1);
+  return rental.status === 'ACTIVE' && freeFrom <= today ? addDays(today, 1) : freeFrom;
 }
 
-const describeBooking = (rental, today) => `${rental.code} (${dateString(rental.startDate)} to ${heldUntil(rental, today)})`;
+const describeBooking = (rental, today) => `${rental.code} (${dateString(rental.startDate)} to ${dateString(rental.endDate)})`;
 
-/** The first reservation or active rental of the vehicle that overlaps [startDate, endDate). */
+/** The first reservation or active rental of the vehicle that overlaps [startDate, endDate]. */
 async function findOverlap(ctx, { vehicleId, startDate, endDate, excludeId, session }) {
   const today = todayIn(ctx.timezone);
   const candidates = await ctx.models.Rental.find({
     vehicle: vehicleId,
     status: { $in: ['RESERVED', 'ACTIVE'] },
-    startDate: { $lt: toDate(endDate) },
+    startDate: { $lte: toDate(endDate) },
     ...(excludeId ? { _id: { $ne: excludeId } } : {})
   })
     .session(session ?? null)
@@ -132,7 +153,7 @@ async function findOverlap(ctx, { vehicleId, startDate, endDate, excludeId, sess
 }
 
 /**
- * Unassigned make/model holds that overlap [startDate, endDate).
+ * Unassigned make/model holds that overlap [startDate, endDate].
  * These consume pool capacity without locking a plate yet.
  */
 async function findClassHolds(ctx, { make, model, startDate, endDate, excludeId, session }) {
@@ -142,7 +163,7 @@ async function findClassHolds(ctx, { make, model, startDate, endDate, excludeId,
     status: 'RESERVED',
     requestedMake: new RegExp(`^${escapeRegex(make.trim())}$`, 'i'),
     requestedModel: new RegExp(`^${escapeRegex(model.trim())}$`, 'i'),
-    startDate: { $lt: toDate(endDate) },
+    startDate: { $lte: toDate(endDate) },
     ...(excludeId ? { _id: { $ne: excludeId } } : {})
   })
     .session(session ?? null)
@@ -173,8 +194,9 @@ async function classAvailability(ctx, { make, model, startDate, endDate, exclude
   }
   const holds = await findClassHolds(ctx, { make, model, startDate, endDate, excludeId, session });
   const availableCount = Math.max(0, free.length - holds.length);
-  // Prefer the cheapest free plate for default rate/deposit.
-  const sample = [...free].sort((a, b) => a.dailyRate - b.dailyRate || a.depositAmount - b.depositAmount)[0] ?? null;
+  // Prefer the cheapest free plate for default rate/deposit (unpriced plates sort last).
+  const rateOf = (v) => (v.dailyRate == null ? Number.POSITIVE_INFINITY : v.dailyRate);
+  const sample = [...free].sort((a, b) => rateOf(a) - rateOf(b) || a.depositAmount - b.depositAmount)[0] ?? null;
   return {
     make: sample?.make ?? make.trim(),
     model: sample?.model ?? model.trim(),
@@ -250,9 +272,11 @@ function fullPaymentBy(ctx, rental, { path } = {}) {
 
 /** A booking's length in days, after checking its dates against the tenant's rules. */
 function bookingDays(ctx, { startDate, endDate }) {
-  const totalDays = daysBetween(startDate, endDate);
+  if (daysBetween(startDate, endDate) < 0) {
+    throw invalid('The return date must be on or after the pickup date', [{ path: 'endDate', message: 'Before the pickup date' }]);
+  }
+  const totalDays = rentalDays(startDate, endDate);
   const minDays = Math.max(1, ctx.config.rules.minRentalDays);
-  if (totalDays < 1) throw invalid('The return date must be after the pickup date', [{ path: 'endDate', message: 'Before the pickup date' }]);
   if (totalDays < minDays) throw invalid(`Rentals are at least ${minDays} days`, [{ path: 'endDate', message: `At least ${minDays} days` }]);
   if (startDate < todayIn(ctx.timezone)) throw invalid('The pickup date is in the past', [{ path: 'startDate', message: 'In the past' }]);
   return totalDays;
@@ -313,7 +337,10 @@ async function bookWithin(ctx, session, data, { source = 'COUNTER' } = {}) {
   if (overlap) throw conflict(`Conflicts with ${describeBooking(overlap, today)}`);
   await assertPlateLeavesClassCapacity(ctx, vehicle, { startDate: data.startDate, endDate: data.endDate, session });
 
-  const dailyRate = data.dailyRate ?? vehicle.dailyRate;
+  const dailyRate = data.dailyRate ?? vehicle.dailyRate ?? null;
+  if (dailyRate == null) {
+    throw invalid('Enter the daily rate for this booking', [{ path: 'dailyRate', message: 'Required' }]);
+  }
   const depositAmount = data.depositAmount ?? vehicle.depositAmount;
   const supplierRentalCost = supplierCostFor(ctx, vehicle, data.supplierRentalCost);
   const code = await nextCode(ctx, { prefix: ctx.config.rules.codePrefixes.booking, sequence: 'booking', year: today.slice(0, 4), session });
@@ -372,8 +399,11 @@ async function bookClassWithin(ctx, session, data, { source = 'COUNTER' } = {}) 
     );
   }
   const renter = await findOr404(ctx.models.Renter, data.renterId, 'Renter', { session });
-  const dailyRate = data.dailyRate ?? capacity.sample.dailyRate;
-  const depositAmount = data.depositAmount ?? capacity.sample.depositAmount;
+  const dailyRate = data.dailyRate ?? capacity.sample?.dailyRate ?? null;
+  if (dailyRate == null) {
+    throw invalid('Enter the daily rate for this booking', [{ path: 'dailyRate', message: 'Required' }]);
+  }
+  const depositAmount = data.depositAmount ?? capacity.sample?.depositAmount;
   const code = await nextCode(ctx, { prefix: ctx.config.rules.codePrefixes.booking, sequence: 'booking', year: today.slice(0, 4), session });
   const [created] = await ctx.models.Rental.create(
     [
@@ -630,16 +660,175 @@ function createRentals({ platformDb }) {
     },
 
     async updateRental(ctx, rentalId, input) {
-      const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental');
-      const { customFields, ...changes } = parseRecord(RentalUpdateSchema(ctx), input, ctx.config, 'rentals', { update: true });
-      await ctx.models.Rental.updateOne({ _id: rental._id }, updateWithCustomFields(changes, customFields));
-      if (await discardReplacedFieldFiles(ctx, rental, customFields)) await refreshStorage(ctx);
-      const fields = [
-        ...Object.keys(changes).filter((key) => changes[key] !== (rental[key] ?? '')),
-        ...changedCustomFields(rental, customFields)
-      ];
-      if (fields.length) {
-        await recordAudit(ctx, { action: 'rental.updated', entityType: 'rental', entityId: rentalId, summary: `Updated ${rental.code}: ${fields.join(', ')}` });
+      const raw = input ?? {};
+      const data = parseRecord(RentalUpdateSchema(ctx), raw, ctx.config, 'rentals', { update: true });
+      const { customFields, ...parsed } = data;
+      const attempted = Object.keys(raw).filter((key) => raw[key] !== undefined);
+
+      let summaryBits = [];
+      let filesChanged = false;
+      await inTransaction(ctx, async (session) => {
+        const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental', { session });
+        if (rental.status === 'COMPLETED' || rental.status === 'CANCELLED') {
+          throw conflict(`${rental.code} is ${rental.status.toLowerCase()}; it can no longer be edited`);
+        }
+        const allowed = rental.status === 'RESERVED' ? RESERVED_EDITABLE : ACTIVE_EDITABLE;
+        const forbidden = attempted.filter((key) => !allowed.has(key));
+        if (forbidden.length) {
+          throw invalid(
+            `Can't change ${forbidden.join(', ')} while the rental is ${rental.status.toLowerCase()}`,
+            forbidden.map((path) => ({ path, message: `Not editable when ${rental.status.toLowerCase()}` }))
+          );
+        }
+
+        await lock(ctx, `rental:${rental._id}`, session);
+
+        const $set = {};
+        const $unset = {};
+        summaryBits = [];
+
+        // Dates (RESERVED only). Changing dates clears any billableDays override.
+        const datesChanged = parsed.startDate !== undefined || parsed.endDate !== undefined;
+        const startDate = parsed.startDate ?? dateString(rental.startDate);
+        const endDate = parsed.endDate ?? dateString(rental.endDate);
+        let totalDays = rental.totalDays;
+        if (datesChanged) {
+          totalDays = bookingDays(ctx, { startDate, endDate });
+          if (rental.vehicle) {
+            await lock(ctx, `vehicle:${rental.vehicle}`, session);
+            const overlap = await findOverlap(ctx, {
+              vehicleId: rental.vehicle,
+              startDate,
+              endDate,
+              excludeId: rental._id,
+              session
+            });
+            if (overlap) throw conflict(`Conflicts with ${describeBooking(overlap, todayIn(ctx.timezone))}`);
+          } else if (rental.requestedMake && rental.requestedModel) {
+            await lock(ctx, `class:${classKey(rental.requestedMake, rental.requestedModel)}`, session);
+            const capacity = await classAvailability(ctx, {
+              make: rental.requestedMake,
+              model: rental.requestedModel,
+              startDate,
+              endDate,
+              excludeId: rental._id,
+              session
+            });
+            if (capacity.availableCount < 1) {
+              throw conflict(`No ${rental.requestedMake} ${rental.requestedModel} left for these dates`);
+            }
+          }
+          $set.startDate = toDate(startDate);
+          $set.endDate = toDate(endDate);
+          $set.totalDays = totalDays;
+          $unset.billableDays = 1;
+          const was = `${dateString(rental.startDate)} → ${dateString(rental.endDate)}`;
+          const now = `${startDate} → ${endDate}`;
+          if (was !== now) summaryBits.push(`dates ${was} → ${now}`);
+        }
+
+        // Renter (RESERVED only).
+        if (parsed.renterId !== undefined) {
+          const renter = await findOr404(ctx.models.Renter, parsed.renterId, 'Renter', { session });
+          if (String(rental.renter) !== String(renter._id)) {
+            $set.renter = renter._id;
+            summaryBits.push(`renter → ${renter.fullName}`);
+          }
+        }
+
+        // Money: rate / deposit / chargeable days.
+        // billableDays null clears an override; omitted keeps the stored value (unless dates changed).
+        const billableTouched = parsed.billableDays !== undefined;
+        let billableDays;
+        if (datesChanged) billableDays = null;
+        else if (billableTouched) billableDays = parsed.billableDays;
+        else billableDays = rental.billableDays ?? null;
+        const chargedDays = billableDays ?? totalDays;
+
+        const dailyRate = parsed.dailyRate ?? rental.dailyRate;
+        const depositAmount = parsed.depositAmount !== undefined ? parsed.depositAmount : rental.depositAmount;
+        const moneyTouched =
+          parsed.dailyRate !== undefined || parsed.depositAmount !== undefined || datesChanged || billableTouched;
+        if (moneyTouched) {
+          const totalAmount = chargedDays * dailyRate;
+          if (totalAmount + depositAmount < (rental.paidAmount ?? 0)) {
+            throw invalid(
+              `The new total is below what was already paid (${rental.paidAmount}). Record a refund first.`,
+              [
+                {
+                  path:
+                    billableTouched && !datesChanged
+                      ? 'billableDays'
+                      : parsed.dailyRate !== undefined
+                        ? 'dailyRate'
+                        : 'depositAmount',
+                  message: 'Below amount already paid'
+                }
+              ]
+            );
+          }
+          if (parsed.dailyRate !== undefined && parsed.dailyRate !== rental.dailyRate) {
+            $set.dailyRate = parsed.dailyRate;
+            summaryBits.push(`dailyRate ${rental.dailyRate} → ${parsed.dailyRate}`);
+          }
+          if (parsed.depositAmount !== undefined && parsed.depositAmount !== rental.depositAmount) {
+            $set.depositAmount = parsed.depositAmount;
+            summaryBits.push(`depositAmount ${rental.depositAmount} → ${parsed.depositAmount}`);
+          }
+          if (billableTouched && !datesChanged) {
+            if (billableDays == null) {
+              $unset.billableDays = 1;
+              if (rental.billableDays != null) summaryBits.push(`billableDays ${rental.billableDays} → calendar (${totalDays})`);
+            } else {
+              $set.billableDays = billableDays;
+              if (billableDays !== rental.billableDays) {
+                summaryBits.push(`billableDays ${rental.billableDays ?? rental.totalDays} → ${billableDays}`);
+              }
+            }
+          }
+          if (totalAmount !== rental.totalAmount) $set.totalAmount = totalAmount;
+
+          // ACTIVE with fullPayment confirmed: clear it when the new balance is above zero.
+          if (rental.status === 'ACTIVE' && rental.fullPayment?.at) {
+            const preview = {
+              ...rental,
+              dailyRate,
+              depositAmount,
+              totalAmount,
+              totalDays,
+              billableDays
+            };
+            if (owedOn(preview) > 0) $unset.fullPayment = '';
+          }
+        }
+
+        if (parsed.notes !== undefined && parsed.notes !== (rental.notes ?? '')) {
+          $set.notes = parsed.notes;
+          summaryBits.push('notes');
+        }
+
+        const custom = raw.customFields !== undefined ? customFields : { set: {}, unset: [] };
+        if (raw.customFields !== undefined) summaryBits.push(...changedCustomFields(rental, custom));
+
+        const update = updateWithCustomFields($set, custom);
+        if (Object.keys(update.$set).length === 0) delete update.$set;
+        if (Object.keys($unset).length) update.$unset = { ...(update.$unset ?? {}), ...$unset };
+        if (update.$set || update.$unset) {
+          await ctx.models.Rental.updateOne({ _id: rental._id }, update, { session });
+        }
+
+        if (await discardReplacedFieldFiles(ctx, rental, custom)) filesChanged = true;
+      });
+      if (filesChanged) await refreshStorage(ctx);
+
+      if (summaryBits.length) {
+        const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental');
+        await recordAudit(ctx, {
+          action: 'rental.updated',
+          entityType: 'rental',
+          entityId: rentalId,
+          summary: `Updated ${rental.code}: ${summaryBits.join(', ')}`
+        });
       }
       return getRental(ctx, rentalId);
     },
@@ -689,12 +878,14 @@ function createRentals({ platformDb }) {
     },
 
     /**
-     * Per-vehicle availability for [startDate, endDate), plus make/model class
+     * Per-vehicle availability for [startDate, endDate], plus make/model class
      * availability when the tenant allows class holds.
      */
     async availability(ctx, query) {
       const { startDate, endDate, excludeRentalId } = parse(AvailabilityQuerySchema, query);
-      if (daysBetween(startDate, endDate) < 1) throw invalid('The return date must be after the pickup date', [{ path: 'endDate', message: 'Before the pickup date' }]);
+      if (daysBetween(startDate, endDate) < 0) {
+        throw invalid('The return date must be on or after the pickup date', [{ path: 'endDate', message: 'Before the pickup date' }]);
+      }
       const today = todayIn(ctx.timezone);
       const mode = reservationModeOf(ctx);
       const vehicles = await ctx.models.Vehicle.find().sort({ plateNumber: 1 }).lean();
@@ -715,7 +906,7 @@ function createRentals({ platformDb }) {
           return {
             vehicle: vehicleRef(vehicle),
             ownership: vehicle.ownership ?? 'OWNED',
-            dailyRate: vehicle.dailyRate,
+            dailyRate: vehicle.dailyRate ?? null,
             depositAmount: vehicle.depositAmount,
             available: !reason,
             reason
@@ -742,7 +933,7 @@ function createRentals({ platformDb }) {
             model: capacity.model,
             fleetCount: capacity.fleetCount,
             availableCount: capacity.availableCount,
-            dailyRate: capacity.sample?.dailyRate ?? vehicle.dailyRate,
+            dailyRate: capacity.sample?.dailyRate ?? vehicle.dailyRate ?? null,
             depositAmount: capacity.sample?.depositAmount ?? vehicle.depositAmount,
             available: capacity.availableCount > 0,
             reason: capacity.availableCount > 0 ? null : 'No units left for these dates'

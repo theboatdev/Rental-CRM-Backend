@@ -3,6 +3,7 @@ const { requireModule, requirePermission, requireAnyPermission } = require('../m
 const { contextOf } = require('../tenant/context');
 const { createVehicles } = require('../tenant/vehicles');
 const { createRenters } = require('../tenant/renters');
+const { createSuppliers } = require('../tenant/suppliers');
 const { createRentals } = require('../tenant/rentals');
 const { createPayments } = require('../tenant/payments');
 const { createCosts } = require('../tenant/costs');
@@ -20,6 +21,7 @@ const guard = (moduleKey, permission) => [requireModule(moduleKey), requirePermi
 function registerOperationRoutes(router, { platformDb, digests, loadLogo }) {
   const vehicles = createVehicles({ platformDb });
   const renters = createRenters({ platformDb });
+  const suppliers = createSuppliers();
   const rentals = createRentals({ platformDb });
   const payments = createPayments({ platformDb });
   const costs = createCosts({ platformDb });
@@ -61,6 +63,12 @@ function registerOperationRoutes(router, { platformDb, digests, loadLogo }) {
     guard('renters', 'renters:documents:verify'),
     handle((req) => renters.verifyDocument(contextOf(req), req.params.id, req.params.documentId))
   );
+
+  router.get('/suppliers', guard('suppliers', 'suppliers:read'), handle((req) => suppliers.listSuppliers(contextOf(req))));
+  router.get('/suppliers/:id', guard('suppliers', 'suppliers:read'), handle((req) => suppliers.getSupplier(contextOf(req), req.params.id)));
+  router.post('/suppliers', guard('suppliers', 'suppliers:create'), handle((req) => suppliers.createSupplier(contextOf(req), req.body), 201));
+  router.patch('/suppliers/:id', guard('suppliers', 'suppliers:update'), handle((req) => suppliers.updateSupplier(contextOf(req), req.params.id, req.body)));
+  router.post('/suppliers/:id/status', guard('suppliers', 'suppliers:update'), handle((req) => suppliers.setStatus(contextOf(req), req.params.id, req.body)));
 
   router.get('/rentals', guard('rentals', 'rentals:read'), handle((req) => rentals.listRentals(contextOf(req), query(req))));
   router.get('/rentals/:id', guard('rentals', 'rentals:read'), handle((req) => rentals.getRental(contextOf(req), req.params.id)));

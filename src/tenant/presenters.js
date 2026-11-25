@@ -35,18 +35,36 @@ const presentVehicle = (v, ctx) => ({
   year: v.year ?? null,
   transmission: v.transmission,
   fuelType: v.fuelType,
-  dailyRate: v.dailyRate,
+  dailyRate: v.dailyRate ?? null,
   secondaryDailyRate: v.secondaryDailyRate ?? null,
   depositAmount: v.depositAmount,
   mileage: v.mileage,
   status: v.status,
   ownership: v.ownership ?? 'OWNED',
+  supplierId: v.supplierId ? String(v.supplierId) : null,
   thumbnail: v.thumbnail ?? null,
   notes: v.notes ?? '',
   customFields: presentCustomFields(ctx, v.customFields, 'vehicles:read'),
   documents: (v.documents ?? []).map((d) => presentVehicleDocument(d, ctx)),
   createdAt: iso(v.createdAt),
   updatedAt: iso(v.updatedAt)
+});
+
+const presentSupplier = (s, vehicleCount = 0) => ({
+  id: String(s._id),
+  profileId: s.profileId,
+  name: s.name,
+  contactPerson: s.contactPerson ?? null,
+  phone: s.phone,
+  email: s.email ?? null,
+  bankName: s.bankName ?? null,
+  bankAccount: s.bankAccount ?? null,
+  bankAccountHolder: s.bankAccountHolder ?? null,
+  status: s.status ?? 'ACTIVE',
+  notes: s.notes ?? '',
+  vehicleCount,
+  createdAt: iso(s.createdAt),
+  updatedAt: iso(s.updatedAt)
 });
 
 /**
@@ -136,6 +154,8 @@ function presentRental(r, ctx) {
     endDate,
     actualReturnDate: iso(r.actualReturnDate),
     totalDays: r.totalDays,
+    // Null = charge totalDays. When set, totalAmount = billableDays × dailyRate.
+    billableDays: r.billableDays ?? null,
     dailyRate: r.dailyRate,
     totalAmount: r.totalAmount,
     depositAmount: r.depositAmount,
@@ -214,6 +234,7 @@ module.exports = {
   renterRef,
   presentVehicle,
   presentVehicleDocument,
+  presentSupplier,
   presentRenter,
   presentDocument,
   presentRental,

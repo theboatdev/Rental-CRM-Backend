@@ -46,6 +46,12 @@ const MODULES = {
     tab: true,
     requires: ['vehicles']
   },
+  suppliers: {
+    label: 'Suppliers',
+    description: 'Third-party supplier profiles linked to hired-in vehicles.',
+    tab: true,
+    requires: ['vehicles']
+  },
   fuelLogs: {
     label: 'Fuel Logs',
     description: 'Fuel fill-ups and burn per vehicle, counted in operating costs.',

@@ -16,7 +16,10 @@ const iso = (date) => (date ? new Date(date).toISOString() : null);
 const toDate = (dateString) => new Date(`${dateString}T00:00:00.000Z`);
 const dateString = (date) => (date ? new Date(date).toISOString().slice(0, 10) : null);
 const addDays = (dateString_, days) => dateString(new Date(toDate(dateString_).getTime() + days * DAY_MS));
+/** Exclusive day difference (end − start). Useful for “days until” and month lengths. */
 const daysBetween = (start, end) => Math.round((toDate(end) - toDate(start)) / DAY_MS);
+/** Inclusive rental length: pickup and return days both count (25→29 = 5). */
+const rentalDays = (start, end) => daysBetween(start, end) + 1;
 
 /** Today's date in a timezone, as YYYY-MM-DD. */
 const todayIn = (timeZone, now = new Date()) =>
@@ -78,6 +81,7 @@ module.exports = {
   dateString,
   addDays,
   daysBetween,
+  rentalDays,
   todayIn,
   DateStringSchema,
   IdSchema,

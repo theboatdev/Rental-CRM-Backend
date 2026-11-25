@@ -384,7 +384,12 @@ function renderReturnReceipt({ config, receipt, logo = null }, { compress = true
       [labelOf(config, 'rentals', 'startDate'), format.day(receipt.startDate)],
       [labelOf(config, 'rentals', 'endDate'), format.day(receipt.endDate)],
       ['Returned on', format.dateTime(receipt.returnedAt)],
-      ['Rental days', format.number(receipt.totalDays)],
+      [
+        'Rental days',
+        receipt.billableDays != null && receipt.billableDays !== receipt.totalDays
+          ? `${format.number(receipt.totalDays)} (charged: ${format.number(receipt.billableDays)})`
+          : format.number(receipt.totalDays)
+      ],
       ['Odometer out', receipt.startMileage != null ? format.distance(receipt.startMileage) : '—'],
       ['Odometer in', receipt.endMileage != null ? format.distance(receipt.endMileage) : '—'],
       ['Distance driven', distance != null ? format.distance(distance) : '—'],
@@ -408,11 +413,16 @@ function renderReturnReceipt({ config, receipt, logo = null }, { compress = true
   // --- Charges and the settlement -----------------------------------------------------------------------------
   const charges = () => {
     heading('Charges');
+    const chargedDays = receipt.billableDays ?? receipt.totalDays;
+    const quantityLabel =
+      receipt.billableDays != null && receipt.billableDays !== receipt.totalDays
+        ? `${format.number(receipt.totalDays)} days (charged: ${format.number(chargedDays)})`
+        : `${format.number(chargedDays)} ${chargedDays === 1 ? 'day' : 'days'}`;
     const rows = [
       {
         cells: [
           `Vehicle rental: ${vehicleName} (${receipt.vehicle.plateNumber})`,
-          `${format.number(receipt.totalDays)} ${receipt.totalDays === 1 ? 'day' : 'days'}`,
+          quantityLabel,
           format.money(receipt.dailyRate),
           format.money(receipt.totalAmount)
         ]

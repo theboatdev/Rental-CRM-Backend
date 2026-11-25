@@ -39,6 +39,10 @@ const PERMISSIONS = {
   'costs:create': { group: 'Costs', label: 'Log costs and upload bills', module: 'costs' },
   'costs:delete': { group: 'Costs', label: 'Delete cost entries', module: 'costs' },
 
+  'suppliers:read': { group: 'Suppliers', label: 'View supplier profiles', module: 'suppliers' },
+  'suppliers:create': { group: 'Suppliers', label: 'Add suppliers', module: 'suppliers' },
+  'suppliers:update': { group: 'Suppliers', label: 'Edit suppliers and change status', module: 'suppliers' },
+
   'fuel:read': { group: 'Fuel', label: 'View fuel logs', module: 'fuelLogs' },
   'fuel:create': { group: 'Fuel', label: 'Log fuel fill-ups', module: 'fuelLogs' },
 
@@ -97,6 +101,7 @@ const SYSTEM_ROLES = [
       'payments:record',
       'costs:read',
       'costs:create',
+      'suppliers:read',
       'fuel:read',
       'fuel:create'
     ],
@@ -119,6 +124,7 @@ const SYSTEM_ROLES = [
       'costs:read',
       'costs:create',
       'costs:delete',
+      'suppliers:read',
       'fuel:read',
       'whatsapp:view',
       'audit:read'

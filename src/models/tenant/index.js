@@ -8,6 +8,7 @@ const TENANT_SCHEMAS = {
   Role: require('./Role'),
   Vehicle: require('./Vehicle'),
   Renter: require('./Renter'),
+  Supplier: require('./Supplier'),
   Rental: require('./Rental'),
   Payment: require('./Payment'),
   VehicleCost: require('./VehicleCost'),

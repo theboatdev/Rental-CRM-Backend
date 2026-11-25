@@ -1,6 +1,6 @@
 const { z } = require('zod');
 const { TRANSMISSIONS, FUEL_TYPES, VEHICLE_OWNERSHIPS } = require('../models/tenant/enums');
-const { conflict, notFound } = require('../platform/errors');
+const { conflict, invalid, notFound } = require('../platform/errors');
 const { refreshVehicleUsage, refreshStorageUsage } = require('../platform/usage');
 const { parse, findOr404, can, moduleOn, activeListKey, IdSchema, DateStringSchema } = require('./common');
 const { presentVehicle, presentRental, presentCost, presentFuelLog } = require('./presenters');
@@ -24,6 +24,8 @@ const VEHICLE_FIELDS = {
   notes: z.string().trim().max(1000)
 };
 
+const rateOnVehicle = (ctx) => ctx.config.modules.vehicles.rateOnVehicle !== false;
+
 /** `thumbnail` takes an uploaded photo (POST /uploads { kind: 'vehiclePhoto' }), or null to remove it. */
 const photoInput = (ctx) => fileInput(ctx, 'vehiclePhoto').nullable();
 
@@ -46,11 +48,15 @@ const VehicleInputSchema = (ctx) =>
     year: VEHICLE_FIELDS.year.optional(),
     transmission: VEHICLE_FIELDS.transmission.default('AUTOMATIC'),
     fuelType: VEHICLE_FIELDS.fuelType.default('PETROL'),
+    // Required when modules.vehicles.rateOnVehicle is on (enforced in createVehicle).
+    dailyRate: VEHICLE_FIELDS.dailyRate.optional(),
     secondaryDailyRate: VEHICLE_FIELDS.secondaryDailyRate.optional(),
     depositAmount: VEHICLE_FIELDS.depositAmount.optional(),
     mileage: VEHICLE_FIELDS.mileage.default(0),
     // Dropped by parseRecord unless modules.vehicles.thirdPartyVehicles is on.
     ownership: VEHICLE_FIELDS.ownership.default('OWNED'),
+    // Kept only when third-party tracking and the suppliers module are both on (see applySupplierLink).
+    supplierId: IdSchema.nullable().optional(),
     thumbnail: photoInput(ctx).optional(),
     notes: VEHICLE_FIELDS.notes.default(''),
     documents: z.array(VehicleDocumentInputSchema(ctx)).max(20).default([]),
@@ -68,7 +74,12 @@ const VehicleDocumentFileSchema = (ctx) => z.strictObject({ file: fileInput(ctx,
 /** RENTED is set by check-in and cleared by a return, never by hand. */
 const VehicleUpdateSchema = (ctx) =>
   z
-    .strictObject({ ...VEHICLE_FIELDS, thumbnail: photoInput(ctx), status: z.enum(['AVAILABLE', 'MAINTENANCE']) })
+    .strictObject({
+      ...VEHICLE_FIELDS,
+      supplierId: IdSchema.nullable(),
+      thumbnail: photoInput(ctx),
+      status: z.enum(['AVAILABLE', 'MAINTENANCE'])
+    })
     .partial()
     .extend({ customFields: customFieldsInput(ctx, 'vehicles', { update: true }) });
 
@@ -79,6 +90,43 @@ const VehicleUpdateSchema = (ctx) =>
 function withPhoto(ctx, { thumbnail: photo, ...data }) {
   if (photo === undefined) return data;
   return { ...data, photo, thumbnail: photo && ctx.storage.publicUrl(photo) };
+}
+
+const suppliersLinkOn = (ctx) => moduleOn(ctx, 'suppliers') && Boolean(ctx.config.modules.vehicles.thirdPartyVehicles);
+
+/**
+ * Resolves ownership ↔ supplierId. When suppliers + third-party tracking are
+ * on, THIRD_PARTY vehicles need a supplier; OWNED clears the link. When those
+ * modules are off, supplierId is dropped from the payload.
+ */
+async function applySupplierLink(ctx, data, { existing } = {}) {
+  if (!suppliersLinkOn(ctx)) {
+    const { supplierId: _ignored, ...rest } = data;
+    return rest;
+  }
+
+  // Updates that don't touch ownership/supplier leave the existing link alone.
+  const touching = data.ownership !== undefined || data.supplierId !== undefined;
+  if (!touching && existing) return data;
+
+  let ownership = data.ownership ?? existing?.ownership ?? 'OWNED';
+  if (data.supplierId && ownership !== 'THIRD_PARTY') ownership = 'THIRD_PARTY';
+
+  if (ownership !== 'THIRD_PARTY') {
+    return { ...data, ownership, supplierId: null };
+  }
+
+  const supplierId =
+    data.supplierId !== undefined ? data.supplierId : existing?.supplierId ? String(existing.supplierId) : null;
+  if (!supplierId) {
+    throw invalid('Pick a supplier for this third-party vehicle', [{ path: 'supplierId', message: 'Required' }]);
+  }
+  const supplier = await findOr404(ctx.models.Supplier, supplierId, 'Supplier');
+  const alreadyLinked = existing?.supplierId && String(existing.supplierId) === String(supplier._id);
+  if (supplier.status !== 'ACTIVE' && !alreadyLinked) {
+    throw invalid('That supplier is inactive', [{ path: 'supplierId', message: 'Inactive' }]);
+  }
+  return { ...data, ownership: 'THIRD_PARTY', supplierId: supplier._id };
 }
 
 /**
@@ -122,7 +170,10 @@ function createVehicles({ platformDb }) {
 
     /** Refused at the plan's `limits.maxVehicles`. The deposit defaults to `rules.defaultDepositAmount`. */
     async createVehicle(ctx, input) {
-      const data = withPhoto(ctx, parseRecord(VehicleInputSchema(ctx), input, ctx.config, 'vehicles'));
+      const data = await applySupplierLink(ctx, withPhoto(ctx, parseRecord(VehicleInputSchema(ctx), input, ctx.config, 'vehicles')));
+      if (rateOnVehicle(ctx) && data.dailyRate == null) {
+        throw invalid('Daily rate is required', [{ path: 'dailyRate', message: 'Required' }]);
+      }
       const { Vehicle } = ctx.models;
       const { maxVehicles } = ctx.config.limits;
       if ((await Vehicle.countDocuments()) >= maxVehicles) {
@@ -145,7 +196,8 @@ function createVehicles({ platformDb }) {
 
     async updateVehicle(ctx, vehicleId, input) {
       const vehicle = await findOr404(ctx.models.Vehicle, vehicleId, 'Vehicle');
-      const { customFields, ...changes } = withPhoto(ctx, parseRecord(VehicleUpdateSchema(ctx), input, ctx.config, 'vehicles', { update: true }));
+      const { customFields, ...parsed } = withPhoto(ctx, parseRecord(VehicleUpdateSchema(ctx), input, ctx.config, 'vehicles', { update: true }));
+      const changes = await applySupplierLink(ctx, parsed, { existing: vehicle });
       if (changes.status && vehicle.status === 'RENTED') throw conflict("A rented vehicle's status changes when it's returned");
       if (changes.plateNumber && changes.plateNumber !== vehicle.plateNumber && (await ctx.models.Vehicle.exists({ plateNumber: changes.plateNumber }))) {
         throw plateTaken(changes.plateNumber);

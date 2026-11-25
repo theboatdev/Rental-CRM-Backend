@@ -117,15 +117,15 @@ describe('vehicles for dates', () => {
   it('lists the free vehicles, cheapest first, without plates', async () => {
     const { status, body } = await guest('GET', `/beach-rides/vehicles?startDate=${addDays(TODAY, 30)}&endDate=${addDays(TODAY, 33)}`);
     assert.equal(status, 200);
-    assert.equal(body.totalDays, 3);
+    assert.equal(body.totalDays, 4);
     assert.deepEqual(body.vehicles.map((v) => v.model), ['Alto', 'Axio']);
-    assert.equal(body.vehicles[0].totalAmount, 18000);
+    assert.equal(body.vehicles[0].totalAmount, 24000);
     assert.ok(!('plateNumber' in body.vehicles[0]));
   });
 
   it('refuses past or reversed dates', async () => {
     assert.equal((await guest('GET', `/beach-rides/vehicles?startDate=${addDays(TODAY, -2)}&endDate=${TODAY}`)).status, 422);
-    assert.equal((await guest('GET', `/beach-rides/vehicles?startDate=${addDays(TODAY, 5)}&endDate=${addDays(TODAY, 5)}`)).status, 422);
+    assert.equal((await guest('GET', `/beach-rides/vehicles?startDate=${addDays(TODAY, 5)}&endDate=${addDays(TODAY, 4)}`)).status, 422);
   });
 });
 
@@ -148,8 +148,8 @@ describe('guest bookings', () => {
     assert.match(body.bookingCode, /^BK-\d{4}-\d{4}$/);
     assert.match(body.profileId, /^CL-\d{4}$/);
     assert.deepEqual(body.vehicle, { make: 'Suzuki', model: 'Alto', year: 2019 });
-    assert.equal(body.totalDays, 4);
-    assert.equal(body.totalAmount, 24000);
+    assert.equal(body.totalDays, 5);
+    assert.equal(body.totalAmount, 30000);
     assert.deepEqual(body.documents, [{ type: 'NIC', scanned: true }, { type: 'DRIVING_LICENSE_LK', scanned: true }]);
 
     const rental = await models().Rental.findOne({ code: body.bookingCode }).lean();
