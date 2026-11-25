@@ -31,6 +31,8 @@ const vehicleSchema = new Schema(
     status: { type: String, enum: VEHICLE_STATUSES, default: 'AVAILABLE' },
     // OWNED = company fleet; THIRD_PARTY = supplier-sourced. Defaults OWNED; meaningful when modules.vehicles.thirdPartyVehicles is on.
     ownership: { type: String, enum: VEHICLE_OWNERSHIPS, default: 'OWNED' },
+    // Set when ownership is THIRD_PARTY and modules.suppliers is on; otherwise unset.
+    supplierId: { type: Schema.Types.ObjectId, ref: 'Supplier' },
     thumbnail: { type: String }, // the photo's public URL; older vehicles may have one typed in, without a `photo`
     photo: { type: fileSchema }, // the uploaded photo, public in Cloudinary under tenants/<tenantId>/vehicles/
     notes: { type: String },

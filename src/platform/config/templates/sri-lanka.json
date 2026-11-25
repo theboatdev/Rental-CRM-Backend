@@ -39,6 +39,7 @@
     "calendar": { "enabled": true },
     "payments": { "enabled": true },
     "costs": { "enabled": true, "requireBillUpload": false },
+    "suppliers": { "enabled": false },
     "fuelLogs": { "enabled": true },
     "whatsappDigest": { "enabled": true, "cron": "0 8 * * 1", "recipients": [] },
     "guestPortal": { "enabled": true, "residentTypes": ["local", "tourist"], "requireDocumentUpload": true }
@@ -89,7 +90,7 @@
     "defaultDepositAmount": 25000,
     "minRentalDays": 1,
     "touristPermitDocumentKeys": ["IDP", "DMT_PERMIT"],
-    "codePrefixes": { "rental": "RNT", "booking": "BK", "receipt": "RCPT", "advance": "ADV", "renter": "CL" }
+    "codePrefixes": { "rental": "RNT", "booking": "BK", "receipt": "RCPT", "advance": "ADV", "renter": "CL", "supplier": "SUP" }
   },
   "limits": { "maxVehicles": 25, "maxUsers": 5, "storageGb": 5 }
 }

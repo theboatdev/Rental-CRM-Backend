@@ -139,6 +139,8 @@ const ModulesSchema = z.strictObject({
   calendar: z.strictObject({ ...enabled }),
   payments: z.strictObject({ ...enabled }),
   costs: z.strictObject({ ...enabled, requireBillUpload: z.boolean().default(false) }),
+  // Default off so older published configs without this key still validate.
+  suppliers: z.strictObject({ ...enabled }).default({ enabled: false }),
   fuelLogs: z.strictObject({ ...enabled }),
   whatsappDigest: z.strictObject({
     ...enabled,
@@ -205,7 +207,9 @@ const RulesSchema = z.strictObject({
     booking: codePrefix,
     receipt: codePrefix,
     advance: codePrefix,
-    renter: codePrefix
+    renter: codePrefix,
+    // Default so older published configs without a supplier prefix still validate.
+    supplier: codePrefix.default('SUP')
   })
 });
 

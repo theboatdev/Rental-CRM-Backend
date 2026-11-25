@@ -41,12 +41,30 @@ const presentVehicle = (v, ctx) => ({
   mileage: v.mileage,
   status: v.status,
   ownership: v.ownership ?? 'OWNED',
+  supplierId: v.supplierId ? String(v.supplierId) : null,
   thumbnail: v.thumbnail ?? null,
   notes: v.notes ?? '',
   customFields: presentCustomFields(ctx, v.customFields, 'vehicles:read'),
   documents: (v.documents ?? []).map((d) => presentVehicleDocument(d, ctx)),
   createdAt: iso(v.createdAt),
   updatedAt: iso(v.updatedAt)
+});
+
+const presentSupplier = (s, vehicleCount = 0) => ({
+  id: String(s._id),
+  profileId: s.profileId,
+  name: s.name,
+  contactPerson: s.contactPerson ?? null,
+  phone: s.phone,
+  email: s.email ?? null,
+  bankName: s.bankName ?? null,
+  bankAccount: s.bankAccount ?? null,
+  bankAccountHolder: s.bankAccountHolder ?? null,
+  status: s.status ?? 'ACTIVE',
+  notes: s.notes ?? '',
+  vehicleCount,
+  createdAt: iso(s.createdAt),
+  updatedAt: iso(s.updatedAt)
 });
 
 /**
@@ -214,6 +232,7 @@ module.exports = {
   renterRef,
   presentVehicle,
   presentVehicleDocument,
+  presentSupplier,
   presentRenter,
   presentDocument,
   presentRental,
