@@ -102,6 +102,7 @@ function createReceipts({ loadLogo = fetchLogo } = {}) {
         endDate: dateString(rental.endDate),
         returnedAt: rental.actualReturnDate ?? rental.dropInspection?.at ?? new Date(),
         totalDays: rental.totalDays,
+        billableDays: rental.billableDays ?? null,
         dailyRate: rental.dailyRate,
         totalAmount: rental.totalAmount,
         depositAmount: rental.depositAmount,

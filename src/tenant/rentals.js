@@ -108,13 +108,15 @@ const RentalUpdateSchema = (ctx) =>
     endDate: DateStringSchema.optional(),
     renterId: IdSchema.optional(),
     dailyRate: z.number().positive().optional(),
+    // Null clears an override so the rental charges totalDays again.
+    billableDays: z.number().int().min(1).nullable().optional(),
     depositAmount: z.number().min(0).optional(),
     notes: z.string().trim().max(1000).optional(),
     customFields: customFieldsInput(ctx, 'rentals', { update: true })
   });
 
-const RESERVED_EDITABLE = new Set(['startDate', 'endDate', 'renterId', 'dailyRate', 'depositAmount', 'notes', 'customFields']);
-const ACTIVE_EDITABLE = new Set(['dailyRate', 'notes', 'customFields']);
+const RESERVED_EDITABLE = new Set(['startDate', 'endDate', 'renterId', 'dailyRate', 'billableDays', 'depositAmount', 'notes', 'customFields']);
+const ACTIVE_EDITABLE = new Set(['dailyRate', 'billableDays', 'notes', 'customFields']);
 
 const AvailabilityQuerySchema = z.strictObject({ startDate: DateStringSchema, endDate: DateStringSchema, excludeRentalId: IdSchema.optional() });
 
@@ -685,7 +687,7 @@ function createRentals({ platformDb }) {
         const $unset = {};
         summaryBits = [];
 
-        // Dates (RESERVED only).
+        // Dates (RESERVED only). Changing dates clears any billableDays override.
         const datesChanged = parsed.startDate !== undefined || parsed.endDate !== undefined;
         const startDate = parsed.startDate ?? dateString(rental.startDate);
         const endDate = parsed.endDate ?? dateString(rental.endDate);
@@ -719,6 +721,7 @@ function createRentals({ platformDb }) {
           $set.startDate = toDate(startDate);
           $set.endDate = toDate(endDate);
           $set.totalDays = totalDays;
+          $unset.billableDays = 1;
           const was = `${dateString(rental.startDate)} → ${dateString(rental.endDate)}`;
           const now = `${startDate} → ${endDate}`;
           if (was !== now) summaryBits.push(`dates ${was} → ${now}`);
@@ -733,17 +736,35 @@ function createRentals({ platformDb }) {
           }
         }
 
-        // Money: rate / deposit / days.
+        // Money: rate / deposit / chargeable days.
+        // billableDays null clears an override; omitted keeps the stored value (unless dates changed).
+        const billableTouched = parsed.billableDays !== undefined;
+        let billableDays;
+        if (datesChanged) billableDays = null;
+        else if (billableTouched) billableDays = parsed.billableDays;
+        else billableDays = rental.billableDays ?? null;
+        const chargedDays = billableDays ?? totalDays;
+
         const dailyRate = parsed.dailyRate ?? rental.dailyRate;
         const depositAmount = parsed.depositAmount !== undefined ? parsed.depositAmount : rental.depositAmount;
         const moneyTouched =
-          parsed.dailyRate !== undefined || parsed.depositAmount !== undefined || datesChanged;
+          parsed.dailyRate !== undefined || parsed.depositAmount !== undefined || datesChanged || billableTouched;
         if (moneyTouched) {
-          const totalAmount = totalDays * dailyRate;
+          const totalAmount = chargedDays * dailyRate;
           if (totalAmount + depositAmount < (rental.paidAmount ?? 0)) {
             throw invalid(
               `The new total is below what was already paid (${rental.paidAmount}). Record a refund first.`,
-              [{ path: parsed.dailyRate !== undefined ? 'dailyRate' : 'depositAmount', message: 'Below amount already paid' }]
+              [
+                {
+                  path:
+                    billableTouched && !datesChanged
+                      ? 'billableDays'
+                      : parsed.dailyRate !== undefined
+                        ? 'dailyRate'
+                        : 'depositAmount',
+                  message: 'Below amount already paid'
+                }
+              ]
             );
           }
           if (parsed.dailyRate !== undefined && parsed.dailyRate !== rental.dailyRate) {
@@ -754,6 +775,17 @@ function createRentals({ platformDb }) {
             $set.depositAmount = parsed.depositAmount;
             summaryBits.push(`depositAmount ${rental.depositAmount} → ${parsed.depositAmount}`);
           }
+          if (billableTouched && !datesChanged) {
+            if (billableDays == null) {
+              $unset.billableDays = 1;
+              if (rental.billableDays != null) summaryBits.push(`billableDays ${rental.billableDays} → calendar (${totalDays})`);
+            } else {
+              $set.billableDays = billableDays;
+              if (billableDays !== rental.billableDays) {
+                summaryBits.push(`billableDays ${rental.billableDays ?? rental.totalDays} → ${billableDays}`);
+              }
+            }
+          }
           if (totalAmount !== rental.totalAmount) $set.totalAmount = totalAmount;
 
           // ACTIVE with fullPayment confirmed: clear it when the new balance is above zero.
@@ -763,7 +795,8 @@ function createRentals({ platformDb }) {
               dailyRate,
               depositAmount,
               totalAmount,
-              totalDays
+              totalDays,
+              billableDays
             };
             if (owedOn(preview) > 0) $unset.fullPayment = '';
           }

@@ -31,6 +31,7 @@ const BOOKING_PRICING_FIELDS = new Set([
   'totalAmount',
   'depositAmount',
   'supplierRentalCost',
+  'billableDays',
   'balance'
 ]);
 

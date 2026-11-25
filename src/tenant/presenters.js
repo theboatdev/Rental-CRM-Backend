@@ -154,6 +154,8 @@ function presentRental(r, ctx) {
     endDate,
     actualReturnDate: iso(r.actualReturnDate),
     totalDays: r.totalDays,
+    // Null = charge totalDays. When set, totalAmount = billableDays × dailyRate.
+    billableDays: r.billableDays ?? null,
     dailyRate: r.dailyRate,
     totalAmount: r.totalAmount,
     depositAmount: r.depositAmount,

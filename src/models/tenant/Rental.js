@@ -31,6 +31,8 @@ const rentalSchema = new Schema(
     endDate: { type: Date, required: true },
     actualReturnDate: { type: Date },
     totalDays: { type: Number, required: true, min: 1 },
+    // When set, totalAmount = billableDays × dailyRate. Null/absent = charge totalDays (calendar span).
+    billableDays: { type: Number, min: 1 },
     dailyRate: { type: Number, required: true, min: 0 },
     totalAmount: { type: Number, required: true, min: 0 },
     depositAmount: { type: Number, required: true, min: 0 },
