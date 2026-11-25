@@ -23,7 +23,8 @@ const vehicleSchema = new Schema(
     year: { type: Number, min: 1950, max: 2100 }, // required unless the config turns it off (fields.vehicles)
     transmission: { type: String, enum: TRANSMISSIONS, default: 'AUTOMATIC' },
     fuelType: { type: String, enum: FUEL_TYPES, default: 'PETROL' },
-    dailyRate: { type: Number, required: true, min: 0 },
+    // Required when modules.vehicles.rateOnVehicle is on; otherwise set per booking.
+    dailyRate: { type: Number, min: 0 },
     secondaryDailyRate: { type: Number, min: 0 }, // in locale.secondaryCurrency, e.g. the USD rate quoted to tourists
     depositAmount: { type: Number, required: true, min: 0 }, // defaults from rules.defaultDepositAmount when created
     mileage: { type: Number, default: 0, min: 0 },

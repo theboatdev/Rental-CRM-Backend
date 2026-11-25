@@ -1,6 +1,6 @@
 const { z } = require('zod');
 const { TRANSMISSIONS, FUEL_TYPES, VEHICLE_OWNERSHIPS } = require('../models/tenant/enums');
-const { conflict, notFound } = require('../platform/errors');
+const { conflict, invalid, notFound } = require('../platform/errors');
 const { refreshVehicleUsage, refreshStorageUsage } = require('../platform/usage');
 const { parse, findOr404, can, moduleOn, activeListKey, IdSchema, DateStringSchema } = require('./common');
 const { presentVehicle, presentRental, presentCost, presentFuelLog } = require('./presenters');
@@ -24,6 +24,8 @@ const VEHICLE_FIELDS = {
   notes: z.string().trim().max(1000)
 };
 
+const rateOnVehicle = (ctx) => ctx.config.modules.vehicles.rateOnVehicle !== false;
+
 /** `thumbnail` takes an uploaded photo (POST /uploads { kind: 'vehiclePhoto' }), or null to remove it. */
 const photoInput = (ctx) => fileInput(ctx, 'vehiclePhoto').nullable();
 
@@ -46,6 +48,8 @@ const VehicleInputSchema = (ctx) =>
     year: VEHICLE_FIELDS.year.optional(),
     transmission: VEHICLE_FIELDS.transmission.default('AUTOMATIC'),
     fuelType: VEHICLE_FIELDS.fuelType.default('PETROL'),
+    // Required when modules.vehicles.rateOnVehicle is on (enforced in createVehicle).
+    dailyRate: VEHICLE_FIELDS.dailyRate.optional(),
     secondaryDailyRate: VEHICLE_FIELDS.secondaryDailyRate.optional(),
     depositAmount: VEHICLE_FIELDS.depositAmount.optional(),
     mileage: VEHICLE_FIELDS.mileage.default(0),
@@ -123,6 +127,9 @@ function createVehicles({ platformDb }) {
     /** Refused at the plan's `limits.maxVehicles`. The deposit defaults to `rules.defaultDepositAmount`. */
     async createVehicle(ctx, input) {
       const data = withPhoto(ctx, parseRecord(VehicleInputSchema(ctx), input, ctx.config, 'vehicles'));
+      if (rateOnVehicle(ctx) && data.dailyRate == null) {
+        throw invalid('Daily rate is required', [{ path: 'dailyRate', message: 'Required' }]);
+      }
       const { Vehicle } = ctx.models;
       const { maxVehicles } = ctx.config.limits;
       if ((await Vehicle.countDocuments()) >= maxVehicles) {

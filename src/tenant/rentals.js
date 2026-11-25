@@ -63,7 +63,7 @@ const ReservationSchema = (ctx) =>
     renterId: IdSchema,
     startDate: DateStringSchema,
     endDate: DateStringSchema,
-    dailyRate: z.number().positive().optional(),
+    dailyRate: ctx.config.modules.vehicles.rateOnVehicle !== false ? z.number().positive().optional() : z.number().positive(),
     depositAmount: z.number().min(0).optional(),
     // Payable to a third-party vehicle supplier; only kept when the feature is on and the vehicle is THIRD_PARTY.
     supplierRentalCost: z.number().min(0).optional(),
@@ -178,8 +178,9 @@ async function classAvailability(ctx, { make, model, startDate, endDate, exclude
   }
   const holds = await findClassHolds(ctx, { make, model, startDate, endDate, excludeId, session });
   const availableCount = Math.max(0, free.length - holds.length);
-  // Prefer the cheapest free plate for default rate/deposit.
-  const sample = [...free].sort((a, b) => a.dailyRate - b.dailyRate || a.depositAmount - b.depositAmount)[0] ?? null;
+  // Prefer the cheapest free plate for default rate/deposit (unpriced plates sort last).
+  const rateOf = (v) => (v.dailyRate == null ? Number.POSITIVE_INFINITY : v.dailyRate);
+  const sample = [...free].sort((a, b) => rateOf(a) - rateOf(b) || a.depositAmount - b.depositAmount)[0] ?? null;
   return {
     make: sample?.make ?? make.trim(),
     model: sample?.model ?? model.trim(),
@@ -320,7 +321,10 @@ async function bookWithin(ctx, session, data, { source = 'COUNTER' } = {}) {
   if (overlap) throw conflict(`Conflicts with ${describeBooking(overlap, today)}`);
   await assertPlateLeavesClassCapacity(ctx, vehicle, { startDate: data.startDate, endDate: data.endDate, session });
 
-  const dailyRate = data.dailyRate ?? vehicle.dailyRate;
+  const dailyRate = data.dailyRate ?? vehicle.dailyRate ?? null;
+  if (dailyRate == null) {
+    throw invalid('Enter the daily rate for this booking', [{ path: 'dailyRate', message: 'Required' }]);
+  }
   const depositAmount = data.depositAmount ?? vehicle.depositAmount;
   const supplierRentalCost = supplierCostFor(ctx, vehicle, data.supplierRentalCost);
   const code = await nextCode(ctx, { prefix: ctx.config.rules.codePrefixes.booking, sequence: 'booking', year: today.slice(0, 4), session });
@@ -379,8 +383,11 @@ async function bookClassWithin(ctx, session, data, { source = 'COUNTER' } = {}) 
     );
   }
   const renter = await findOr404(ctx.models.Renter, data.renterId, 'Renter', { session });
-  const dailyRate = data.dailyRate ?? capacity.sample.dailyRate;
-  const depositAmount = data.depositAmount ?? capacity.sample.depositAmount;
+  const dailyRate = data.dailyRate ?? capacity.sample?.dailyRate ?? null;
+  if (dailyRate == null) {
+    throw invalid('Enter the daily rate for this booking', [{ path: 'dailyRate', message: 'Required' }]);
+  }
+  const depositAmount = data.depositAmount ?? capacity.sample?.depositAmount;
   const code = await nextCode(ctx, { prefix: ctx.config.rules.codePrefixes.booking, sequence: 'booking', year: today.slice(0, 4), session });
   const [created] = await ctx.models.Rental.create(
     [
@@ -724,7 +731,7 @@ function createRentals({ platformDb }) {
           return {
             vehicle: vehicleRef(vehicle),
             ownership: vehicle.ownership ?? 'OWNED',
-            dailyRate: vehicle.dailyRate,
+            dailyRate: vehicle.dailyRate ?? null,
             depositAmount: vehicle.depositAmount,
             available: !reason,
             reason
@@ -751,7 +758,7 @@ function createRentals({ platformDb }) {
             model: capacity.model,
             fleetCount: capacity.fleetCount,
             availableCount: capacity.availableCount,
-            dailyRate: capacity.sample?.dailyRate ?? vehicle.dailyRate,
+            dailyRate: capacity.sample?.dailyRate ?? vehicle.dailyRate ?? null,
             depositAmount: capacity.sample?.depositAmount ?? vehicle.depositAmount,
             available: capacity.availableCount > 0,
             reason: capacity.availableCount > 0 ? null : 'No units left for these dates'

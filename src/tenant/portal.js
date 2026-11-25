@@ -108,18 +108,20 @@ function assertDocuments(ctx, renter) {
   if (issues.length) throw invalid('Some documents are missing', issues);
 }
 
-const presentGuestVehicle = (v, totalDays) => ({
-  id: String(v._id),
-  make: v.make,
-  model: v.model,
-  year: v.year ?? null,
-  transmission: v.transmission,
-  fuelType: v.fuelType,
-  dailyRate: v.dailyRate,
-  depositAmount: v.depositAmount,
-  totalAmount: v.dailyRate * totalDays,
-  thumbnail: v.thumbnail ?? null
-});
+const presentGuestVehicle = (v, totalDays) => {
+  const priced = v.dailyRate != null;
+  return {
+    id: String(v._id),
+    make: v.make,
+    model: v.model,
+    year: v.year ?? null,
+    transmission: v.transmission,
+    fuelType: v.fuelType,
+    ...(priced ? { dailyRate: v.dailyRate, totalAmount: v.dailyRate * totalDays } : {}),
+    depositAmount: v.depositAmount,
+    thumbnail: v.thumbnail ?? null
+  };
+};
 
 function createPortal({ platformDb }) {
   const { Tenant } = platformDb.models;
@@ -156,7 +158,10 @@ function createPortal({ platformDb }) {
     async vehicles(ctx, query) {
       const dates = parse(DatesSchema, query);
       const totalDays = bookingDays(ctx, dates);
-      const vehicles = await ctx.models.Vehicle.find({ status: { $ne: 'MAINTENANCE' } }).sort({ dailyRate: 1, make: 1, model: 1 }).lean();
+      const rateOnVehicle = ctx.config.modules.vehicles.rateOnVehicle !== false;
+      const vehicles = await ctx.models.Vehicle.find({ status: { $ne: 'MAINTENANCE' } })
+        .sort(rateOnVehicle ? { dailyRate: 1, make: 1, model: 1 } : { make: 1, model: 1 })
+        .lean();
       const free = [];
       for (const vehicle of vehicles) {
         if (await findOverlap(ctx, { vehicleId: vehicle._id, ...dates })) continue;

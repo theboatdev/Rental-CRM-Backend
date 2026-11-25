@@ -108,7 +108,12 @@ const ModulesSchema = z.strictObject({
      * third-party vehicles capture a supplier rental cost, and profit breaks
      * into gross (revenue − supplier) and net (gross − operating costs).
      */
-    thirdPartyVehicles: z.boolean().default(false)
+    thirdPartyVehicles: z.boolean().default(false),
+    /**
+     * When on (default): each vehicle must have a daily rate; bookings may
+     * override it. When off: the rate is entered on each booking instead.
+     */
+    rateOnVehicle: z.boolean().default(true)
   }),
   renters: z.strictObject({ ...enabled }),
   rentals: z.strictObject({

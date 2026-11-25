@@ -35,7 +35,7 @@ const presentVehicle = (v, ctx) => ({
   year: v.year ?? null,
   transmission: v.transmission,
   fuelType: v.fuelType,
-  dailyRate: v.dailyRate,
+  dailyRate: v.dailyRate ?? null,
   secondaryDailyRate: v.secondaryDailyRate ?? null,
   depositAmount: v.depositAmount,
   mileage: v.mileage,

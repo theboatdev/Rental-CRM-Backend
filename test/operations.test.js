@@ -889,3 +889,55 @@ describe('built-in fields', () => {
     assert.equal(cost.body.incurredAt, TODAY);
   });
 });
+
+describe('booking-only vehicle rates', () => {
+  after(() =>
+    publish(tenantA, (config) => {
+      config.modules.vehicles.rateOnVehicle = true;
+      config.limits.maxVehicles = 100;
+    })
+  );
+
+  it('lets vehicles omit dailyRate and requires it on the booking', async () => {
+    await publish(tenantA, (config) => {
+      config.modules.vehicles.rateOnVehicle = false;
+      config.limits.maxVehicles = 100;
+    });
+
+    const created = await owner('POST', '/vehicles', { plateNumber: 'WP RATE-1', make: 'Toyota', model: 'Yaris', year: 2022 });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.dailyRate, null);
+
+    const renter = await addRenter();
+    const missing = await staff('POST', '/rentals', {
+      vehicleId: created.body.id,
+      renterId: renter.id,
+      startDate: TODAY,
+      endDate: addDays(TODAY, 3)
+    });
+    assert.equal(missing.status, 422);
+    assert.ok(missing.body.error.issues.some((i) => i.path === 'dailyRate'), JSON.stringify(missing.body));
+
+    const booked = await staff('POST', '/rentals', {
+      vehicleId: created.body.id,
+      renterId: renter.id,
+      startDate: TODAY,
+      endDate: addDays(TODAY, 3),
+      dailyRate: 7500
+    });
+    assert.equal(booked.status, 201, JSON.stringify(booked.body));
+    assert.equal(booked.body.dailyRate, 7500);
+    assert.equal(booked.body.totalDays, 4);
+    assert.equal(booked.body.totalAmount, 30000);
+  });
+
+  it('still requires dailyRate on the vehicle when rateOnVehicle is on', async () => {
+    await publish(tenantA, (config) => {
+      config.modules.vehicles.rateOnVehicle = true;
+      config.limits.maxVehicles = 100;
+    });
+    const missing = await owner('POST', '/vehicles', { plateNumber: 'WP RATE-2', make: 'Toyota', model: 'Yaris', year: 2022 });
+    assert.equal(missing.status, 422);
+    assert.ok(missing.body.error.issues.some((i) => i.path === 'dailyRate'), JSON.stringify(missing.body));
+  });
+});

@@ -32,9 +32,19 @@ const fieldsOf = (config, section) => config.fields?.[section] ?? DEFAULT_FIELDS
  */
 function builtInOn(config, section, field) {
   const settings = fieldsOf(config, section).builtIn[field.key] ?? DEFAULT_FIELDS[section].builtIn[field.key];
-  if (!settings.active) return null;
+  if (field.rateOnVehicleOnly && !config.modules.vehicles.rateOnVehicle) return null;
   if (field.secondaryCurrencyOnly && !config.locale.secondaryCurrency) return null;
   if (field.thirdPartyVehiclesOnly && !config.modules.vehicles.thirdPartyVehicles) return null;
+  if (!settings.active) {
+    // Booking-only mode: the rental rate field can't be turned off.
+    if (section === 'rentals' && field.key === 'dailyRate' && !config.modules.vehicles.rateOnVehicle) {
+      return { ...settings, active: true, required: true };
+    }
+    return null;
+  }
+  if (section === 'rentals' && field.key === 'dailyRate' && !config.modules.vehicles.rateOnVehicle) {
+    return { ...settings, required: true };
+  }
   return settings;
 }
 

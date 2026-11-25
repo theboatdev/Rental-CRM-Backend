@@ -20,14 +20,23 @@ const BUILT_IN_FIELDS = {
     { key: 'year', label: 'Year', type: 'number', required: true, showInList: true },
     { key: 'transmission', label: 'Transmission', type: 'select', showInList: true, note: 'Off: vehicles are recorded as automatic.' },
     { key: 'fuelType', label: 'Fuel', type: 'select', showInList: true, note: 'Off: vehicles are recorded as petrol.' },
-    { key: 'dailyRate', label: 'Daily rate', type: 'money', core: true },
+    {
+      key: 'dailyRate',
+      label: 'Daily rate',
+      type: 'money',
+      required: true,
+      showInList: true,
+      rateOnVehicleOnly: true,
+      note: 'Off or optional when modules.vehicles.rateOnVehicle is false; then staff enter the rate on each booking.'
+    },
     {
       key: 'secondaryDailyRate',
       label: 'Daily rate (second currency)',
       type: 'money',
       showInList: true,
       secondaryCurrencyOnly: true,
-      note: 'Only used when locale.secondaryCurrency is set.'
+      rateOnVehicleOnly: true,
+      note: 'Only used when locale.secondaryCurrency is set, and modules.vehicles.rateOnVehicle is on.'
     },
     { key: 'depositAmount', label: 'Security deposit', type: 'money', showInList: true, note: 'Off: new vehicles take rules.defaultDepositAmount.' },
     { key: 'mileage', label: 'Odometer', type: 'distance', showInList: true, note: 'Off: readings still come from hand-overs and returns.' },
@@ -58,7 +67,13 @@ const BUILT_IN_FIELDS = {
     { key: 'vehicle', label: 'Vehicle', type: 'reference', core: true },
     { key: 'startDate', label: 'Pickup date', type: 'date', core: true },
     { key: 'endDate', label: 'Return date', type: 'date', core: true },
-    { key: 'dailyRate', label: 'Daily rate', type: 'money', showInList: true, note: "Off: bookings take the vehicle's rate." },
+    {
+      key: 'dailyRate',
+      label: 'Daily rate',
+      type: 'money',
+      showInList: true,
+      note: "Off: bookings take the vehicle's rate. Required when modules.vehicles.rateOnVehicle is false."
+    },
     { key: 'depositAmount', label: 'Security deposit', type: 'money', note: "Off: bookings take the vehicle's deposit." },
     { key: 'notes', label: 'Notes (flight, delivery, requests)', type: 'longText' }
   ],
