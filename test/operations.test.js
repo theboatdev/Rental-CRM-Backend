@@ -800,7 +800,6 @@ describe('custom fields', () => {
     assert.equal(edited.body.notes, 'Meet at arrivals');
     assert.deepEqual(edited.body.customFields, { flightNumber: 'UL 504', childSeat: true });
     assert.equal((await accountant('PATCH', `/rentals/${booked.body.id}`, { notes: 'x' })).status, 403);
-    assert.equal((await staff('PATCH', `/rentals/${booked.body.id}`, { startDate: TODAY })).status, 422);
   });
 
   it('stores payment and cost fields', async () => {
@@ -939,5 +938,121 @@ describe('booking-only vehicle rates', () => {
     const missing = await owner('POST', '/vehicles', { plateNumber: 'WP RATE-2', make: 'Toyota', model: 'Yaris', year: 2022 });
     assert.equal(missing.status, 422);
     assert.ok(missing.body.error.issues.some((i) => i.path === 'dailyRate'), JSON.stringify(missing.body));
+  });
+});
+
+describe('editing bookings', () => {
+  before(() => publish(tenantA, (config) => (config.limits.maxVehicles = 100)));
+
+  it('recomputes days and total when a reservation changes dates', async () => {
+    const vehicle = await addVehicle({ dailyRate: 100, depositAmount: 50 });
+    const renter = await addRenter();
+    const booking = (await book(vehicle, renter)).body;
+    assert.equal(booking.totalDays, 4);
+    assert.equal(booking.totalAmount, 400);
+
+    const edited = await staff('PATCH', `/rentals/${booking.id}`, { endDate: addDays(TODAY, 5) });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.equal(edited.body.endDate, addDays(TODAY, 5));
+    assert.equal(edited.body.totalDays, 6);
+    assert.equal(edited.body.totalAmount, 600);
+    assert.equal(edited.body.balance, 650);
+
+    assert.equal((await staff('PATCH', `/rentals/${booking.id}`, { startDate: addDays(TODAY, -1) })).status, 422);
+  });
+
+  it('rejects date changes that overlap another reservation', async () => {
+    const vehicle = await addVehicle({ dailyRate: 100, depositAmount: 50 });
+    const renter = await addRenter();
+    assert.equal((await book(vehicle, renter)).status, 201);
+    const later = (await book(vehicle, renter, { startDate: addDays(TODAY, 10), endDate: addDays(TODAY, 12) })).body;
+    const clash = await staff('PATCH', `/rentals/${later.id}`, { startDate: TODAY, endDate: addDays(TODAY, 2) });
+    assert.equal(clash.status, 409);
+    assert.match(clash.body.error.message, /^Conflicts with BK-/);
+  });
+
+  it('updates the rate and balance, and blocks dropping below what was paid', async () => {
+    const vehicle = await addVehicle({ dailyRate: 100, depositAmount: 50 });
+    const renter = await addRenter();
+    const booking = (await book(vehicle, renter, { advance: { amount: 300, method: 'CASH' } })).body;
+    assert.equal(booking.paidAmount, 300);
+    assert.equal(booking.balance, 150);
+
+    const raised = await staff('PATCH', `/rentals/${booking.id}`, { dailyRate: 200 });
+    assert.equal(raised.status, 200, JSON.stringify(raised.body));
+    assert.equal(raised.body.dailyRate, 200);
+    assert.equal(raised.body.totalAmount, 800);
+    assert.equal(raised.body.paidAmount, 300);
+    assert.equal(raised.body.balance, 550);
+
+    const tooLow = await staff('PATCH', `/rentals/${booking.id}`, { dailyRate: 1 });
+    assert.equal(tooLow.status, 422);
+    assert.match(tooLow.body.error.message, /already paid/);
+  });
+
+  it('lets a reservation change its renter', async () => {
+    const vehicle = await addVehicle({ dailyRate: 100, depositAmount: 50 });
+    const first = await addRenter();
+    const second = await addRenter();
+    const booking = (await book(vehicle, first)).body;
+    const edited = await staff('PATCH', `/rentals/${booking.id}`, { renterId: second.id });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.equal(edited.body.renter.id, second.id);
+  });
+
+  it('on an active rental allows rate changes but not dates or renter', async () => {
+    const vehicle = await addVehicle({ dailyRate: 100, depositAmount: 50 });
+    const renter = await addRenter();
+    const other = await addRenter();
+    const rental = (await book(vehicle, renter, { pickup: { checkedPoints: points } })).body;
+    assert.equal(rental.status, 'ACTIVE');
+
+    const dates = await staff('PATCH', `/rentals/${rental.id}`, { endDate: addDays(TODAY, 5) });
+    assert.equal(dates.status, 422);
+    assert.ok(dates.body.error.issues.some((i) => i.path === 'endDate'), JSON.stringify(dates.body));
+
+    const renterChange = await staff('PATCH', `/rentals/${rental.id}`, { renterId: other.id });
+    assert.equal(renterChange.status, 422);
+
+    const rate = await staff('PATCH', `/rentals/${rental.id}`, { dailyRate: 150 });
+    assert.equal(rate.status, 200, JSON.stringify(rate.body));
+    assert.equal(rate.body.dailyRate, 150);
+    assert.equal(rate.body.totalAmount, 600);
+  });
+
+  it('clears fullPayment on an active rental when a rate increase leaves money owed', async () => {
+    const vehicle = await addVehicle({ dailyRate: 100, depositAmount: 50 });
+    const renter = await addRenter();
+    // 4 days × 100 + 50 deposit = 450; pay in full at hand-over.
+    const rental = (
+      await book(vehicle, renter, {
+        advance: { amount: 450, method: 'CASH' },
+        pickup: { checkedPoints: points, confirmFullPayment: true }
+      })
+    ).body;
+    assert.ok(rental.fullPayment);
+    assert.equal(rental.balance, 0);
+
+    const raised = await staff('PATCH', `/rentals/${rental.id}`, { dailyRate: 200 });
+    assert.equal(raised.status, 200, JSON.stringify(raised.body));
+    assert.equal(raised.body.totalAmount, 800);
+    assert.equal(raised.body.balance, 400); // 800 + 50 deposit − 450 paid
+    assert.equal(raised.body.fullPayment, null);
+  });
+
+  it('refuses edits on completed and cancelled rentals', async () => {
+    const vehicle = await addVehicle({ dailyRate: 100, depositAmount: 50 });
+    const renter = await addRenter();
+    const active = (await book(vehicle, renter, { pickup: { checkedPoints: points } })).body;
+    assert.equal((await staff('POST', `/rentals/${active.id}/return`, { odometer: 50100, checkedPoints: points })).status, 200);
+    const completed = await staff('PATCH', `/rentals/${active.id}`, { notes: 'After return' });
+    assert.equal(completed.status, 409);
+    assert.match(completed.body.error.message, /completed/);
+
+    const reserved = (await book(await addVehicle({ dailyRate: 100, depositAmount: 50 }), renter)).body;
+    assert.equal((await staff('POST', `/rentals/${reserved.id}/cancel`)).status, 200);
+    const cancelled = await staff('PATCH', `/rentals/${reserved.id}`, { notes: 'After cancel' });
+    assert.equal(cancelled.status, 409);
+    assert.match(cancelled.body.error.message, /cancelled/);
   });
 });

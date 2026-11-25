@@ -98,9 +98,23 @@ function supplierCostFor(ctx, vehicle, supplierRentalCost) {
   return supplierRentalCost ?? 0;
 }
 
-/** Notes and custom fields stay editable whatever the rental's status; dates and amounts don't change here. */
+/**
+ * Fields a PATCH may send. Status decides which ones apply:
+ * RESERVED → all; ACTIVE → dailyRate, notes, customFields; COMPLETED/CANCELLED → none.
+ */
 const RentalUpdateSchema = (ctx) =>
-  z.strictObject({ notes: z.string().trim().max(1000).optional(), customFields: customFieldsInput(ctx, 'rentals', { update: true }) });
+  z.strictObject({
+    startDate: DateStringSchema.optional(),
+    endDate: DateStringSchema.optional(),
+    renterId: IdSchema.optional(),
+    dailyRate: z.number().positive().optional(),
+    depositAmount: z.number().min(0).optional(),
+    notes: z.string().trim().max(1000).optional(),
+    customFields: customFieldsInput(ctx, 'rentals', { update: true })
+  });
+
+const RESERVED_EDITABLE = new Set(['startDate', 'endDate', 'renterId', 'dailyRate', 'depositAmount', 'notes', 'customFields']);
+const ACTIVE_EDITABLE = new Set(['dailyRate', 'notes', 'customFields']);
 
 const AvailabilityQuerySchema = z.strictObject({ startDate: DateStringSchema, endDate: DateStringSchema, excludeRentalId: IdSchema.optional() });
 
@@ -644,16 +658,144 @@ function createRentals({ platformDb }) {
     },
 
     async updateRental(ctx, rentalId, input) {
-      const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental');
-      const { customFields, ...changes } = parseRecord(RentalUpdateSchema(ctx), input, ctx.config, 'rentals', { update: true });
-      await ctx.models.Rental.updateOne({ _id: rental._id }, updateWithCustomFields(changes, customFields));
-      if (await discardReplacedFieldFiles(ctx, rental, customFields)) await refreshStorage(ctx);
-      const fields = [
-        ...Object.keys(changes).filter((key) => changes[key] !== (rental[key] ?? '')),
-        ...changedCustomFields(rental, customFields)
-      ];
-      if (fields.length) {
-        await recordAudit(ctx, { action: 'rental.updated', entityType: 'rental', entityId: rentalId, summary: `Updated ${rental.code}: ${fields.join(', ')}` });
+      const raw = input ?? {};
+      const data = parseRecord(RentalUpdateSchema(ctx), raw, ctx.config, 'rentals', { update: true });
+      const { customFields, ...parsed } = data;
+      const attempted = Object.keys(raw).filter((key) => raw[key] !== undefined);
+
+      let summaryBits = [];
+      let filesChanged = false;
+      await inTransaction(ctx, async (session) => {
+        const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental', { session });
+        if (rental.status === 'COMPLETED' || rental.status === 'CANCELLED') {
+          throw conflict(`${rental.code} is ${rental.status.toLowerCase()}; it can no longer be edited`);
+        }
+        const allowed = rental.status === 'RESERVED' ? RESERVED_EDITABLE : ACTIVE_EDITABLE;
+        const forbidden = attempted.filter((key) => !allowed.has(key));
+        if (forbidden.length) {
+          throw invalid(
+            `Can't change ${forbidden.join(', ')} while the rental is ${rental.status.toLowerCase()}`,
+            forbidden.map((path) => ({ path, message: `Not editable when ${rental.status.toLowerCase()}` }))
+          );
+        }
+
+        await lock(ctx, `rental:${rental._id}`, session);
+
+        const $set = {};
+        const $unset = {};
+        summaryBits = [];
+
+        // Dates (RESERVED only).
+        const datesChanged = parsed.startDate !== undefined || parsed.endDate !== undefined;
+        const startDate = parsed.startDate ?? dateString(rental.startDate);
+        const endDate = parsed.endDate ?? dateString(rental.endDate);
+        let totalDays = rental.totalDays;
+        if (datesChanged) {
+          totalDays = bookingDays(ctx, { startDate, endDate });
+          if (rental.vehicle) {
+            await lock(ctx, `vehicle:${rental.vehicle}`, session);
+            const overlap = await findOverlap(ctx, {
+              vehicleId: rental.vehicle,
+              startDate,
+              endDate,
+              excludeId: rental._id,
+              session
+            });
+            if (overlap) throw conflict(`Conflicts with ${describeBooking(overlap, todayIn(ctx.timezone))}`);
+          } else if (rental.requestedMake && rental.requestedModel) {
+            await lock(ctx, `class:${classKey(rental.requestedMake, rental.requestedModel)}`, session);
+            const capacity = await classAvailability(ctx, {
+              make: rental.requestedMake,
+              model: rental.requestedModel,
+              startDate,
+              endDate,
+              excludeId: rental._id,
+              session
+            });
+            if (capacity.availableCount < 1) {
+              throw conflict(`No ${rental.requestedMake} ${rental.requestedModel} left for these dates`);
+            }
+          }
+          $set.startDate = toDate(startDate);
+          $set.endDate = toDate(endDate);
+          $set.totalDays = totalDays;
+          const was = `${dateString(rental.startDate)} → ${dateString(rental.endDate)}`;
+          const now = `${startDate} → ${endDate}`;
+          if (was !== now) summaryBits.push(`dates ${was} → ${now}`);
+        }
+
+        // Renter (RESERVED only).
+        if (parsed.renterId !== undefined) {
+          const renter = await findOr404(ctx.models.Renter, parsed.renterId, 'Renter', { session });
+          if (String(rental.renter) !== String(renter._id)) {
+            $set.renter = renter._id;
+            summaryBits.push(`renter → ${renter.fullName}`);
+          }
+        }
+
+        // Money: rate / deposit / days.
+        const dailyRate = parsed.dailyRate ?? rental.dailyRate;
+        const depositAmount = parsed.depositAmount !== undefined ? parsed.depositAmount : rental.depositAmount;
+        const moneyTouched =
+          parsed.dailyRate !== undefined || parsed.depositAmount !== undefined || datesChanged;
+        if (moneyTouched) {
+          const totalAmount = totalDays * dailyRate;
+          if (totalAmount + depositAmount < (rental.paidAmount ?? 0)) {
+            throw invalid(
+              `The new total is below what was already paid (${rental.paidAmount}). Record a refund first.`,
+              [{ path: parsed.dailyRate !== undefined ? 'dailyRate' : 'depositAmount', message: 'Below amount already paid' }]
+            );
+          }
+          if (parsed.dailyRate !== undefined && parsed.dailyRate !== rental.dailyRate) {
+            $set.dailyRate = parsed.dailyRate;
+            summaryBits.push(`dailyRate ${rental.dailyRate} → ${parsed.dailyRate}`);
+          }
+          if (parsed.depositAmount !== undefined && parsed.depositAmount !== rental.depositAmount) {
+            $set.depositAmount = parsed.depositAmount;
+            summaryBits.push(`depositAmount ${rental.depositAmount} → ${parsed.depositAmount}`);
+          }
+          if (totalAmount !== rental.totalAmount) $set.totalAmount = totalAmount;
+
+          // ACTIVE with fullPayment confirmed: clear it when the new balance is above zero.
+          if (rental.status === 'ACTIVE' && rental.fullPayment?.at) {
+            const preview = {
+              ...rental,
+              dailyRate,
+              depositAmount,
+              totalAmount,
+              totalDays
+            };
+            if (owedOn(preview) > 0) $unset.fullPayment = '';
+          }
+        }
+
+        if (parsed.notes !== undefined && parsed.notes !== (rental.notes ?? '')) {
+          $set.notes = parsed.notes;
+          summaryBits.push('notes');
+        }
+
+        const custom = raw.customFields !== undefined ? customFields : { set: {}, unset: [] };
+        if (raw.customFields !== undefined) summaryBits.push(...changedCustomFields(rental, custom));
+
+        const update = updateWithCustomFields($set, custom);
+        if (Object.keys(update.$set).length === 0) delete update.$set;
+        if (Object.keys($unset).length) update.$unset = { ...(update.$unset ?? {}), ...$unset };
+        if (update.$set || update.$unset) {
+          await ctx.models.Rental.updateOne({ _id: rental._id }, update, { session });
+        }
+
+        if (await discardReplacedFieldFiles(ctx, rental, custom)) filesChanged = true;
+      });
+      if (filesChanged) await refreshStorage(ctx);
+
+      if (summaryBits.length) {
+        const rental = await findOr404(ctx.models.Rental, rentalId, 'Rental');
+        await recordAudit(ctx, {
+          action: 'rental.updated',
+          entityType: 'rental',
+          entityId: rentalId,
+          summary: `Updated ${rental.code}: ${summaryBits.join(', ')}`
+        });
       }
       return getRental(ctx, rentalId);
     },
